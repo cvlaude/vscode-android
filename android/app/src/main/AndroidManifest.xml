@@ -15,6 +15,9 @@
         <activity
             android:name=".mainactivity"
             android:exported="true"
+            android:screenOrientation="sensorLandscape"
+            android:resizeableActivity="true"
+            android:maxAspectRatio="10.0"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>

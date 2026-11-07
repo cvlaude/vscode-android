@@ -47,14 +47,19 @@ public class mainactivity extends Activity {
     private String download;
     private String pendingruntime;
     private volatile int attempt;
-    private int scale = 60;
+    private int scale = 66;
+    private volatile boolean closing;
+    private volatile java.net.Socket lease;
+    private Thread lifecycle;
     private TextView scalelabel;
     private final int foreground = Color.rgb(204, 204, 204);
 
     @Override
     public void onCreate(Bundle saved) {
         super.onCreate(saved);
-        scale = Math.max(40, Math.min(100, getPreferences(MODE_PRIVATE).getInt("scale", 60)));
+        if (!getPreferences(MODE_PRIVATE).getBoolean("scaleupdated", false)) getPreferences(MODE_PRIVATE).edit().putInt("scale", 66).putBoolean("scaleupdated", true).apply();
+        scale = Math.max(40, Math.min(100, getPreferences(MODE_PRIVATE).getInt("scale", 66)));
+        getWindow().getAttributes().layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
         getWindow().setStatusBarColor(Color.rgb(24, 24, 24));
         getWindow().setNavigationBarColor(Color.rgb(24, 24, 24));
         if (android.os.Build.VERSION.SDK_INT >= 30) {
@@ -62,6 +67,7 @@ public class mainactivity extends Activity {
             getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING);
         }
         showconnection();
+        fullscreen();
         String previous = address.getText().toString();
         if (Uri.parse(previous).getFragment() != null && Uri.parse(previous).getFragment().matches("[a-zA-Z0-9_-]{43}")) connect();
     }
@@ -73,6 +79,7 @@ public class mainactivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        fullscreen();
         if (browser == null) return;
         int generation = attempt;
         new Thread(() -> {
@@ -114,7 +121,7 @@ public class mainactivity extends Activity {
         frame.addView(content, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         frame.setOnApplyWindowInsetsListener((view, insets) -> {
             if (android.os.Build.VERSION.SDK_INT >= 30) {
-                android.graphics.Insets bars = insets.getInsets(android.view.WindowInsets.Type.systemBars() | android.view.WindowInsets.Type.displayCutout());
+                android.graphics.Insets bars = insets.getInsets(android.view.WindowInsets.Type.displayCutout());
                 android.graphics.Insets keyboard = insets.getInsets(android.view.WindowInsets.Type.ime());
                 view.setPadding(bars.left, bars.top, bars.right, Math.max(bars.bottom, keyboard.bottom));
             }
@@ -122,6 +129,43 @@ public class mainactivity extends Activity {
         });
         setContentView(frame);
         frame.requestApplyInsets();
+        fullscreen();
+    }
+
+    private void fullscreen() {
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            android.view.WindowInsetsController controller = getWindow().getInsetsController();
+            if (controller != null) {
+                controller.setSystemBarsBehavior(android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                controller.hide(android.view.WindowInsets.Type.systemBars());
+            }
+        } else getWindow().getDecorView().setSystemUiVisibility(5894);
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean focused) {
+        super.onWindowFocusChanged(focused);
+        if (focused) fullscreen();
+    }
+
+    private void attachruntime(String value) {
+        if (lifecycle != null && lifecycle.isAlive()) return;
+        String token = Uri.parse(value).getFragment();
+        if (token == null || !token.matches("[a-zA-Z0-9_-]{43}")) return;
+        lifecycle = new Thread(() -> {
+            while (!closing) {
+                try (java.net.Socket socket = new java.net.Socket()) {
+                    lease = socket;
+                    socket.connect(new java.net.InetSocketAddress("127.0.0.1", 8767), 1000);
+                    socket.getOutputStream().write((token + "\n").getBytes(StandardCharsets.UTF_8));
+                    socket.getOutputStream().flush();
+                    while (!closing && socket.getInputStream().read() != -1) {}
+                } catch (Exception error) {}
+                finally {lease = null;}
+                if (!closing) try {Thread.sleep(1000);} catch (InterruptedException error) {return;}
+            }
+        }, "workspacelifecycle");
+        lifecycle.start();
     }
 
     private void showconnection() {
@@ -224,6 +268,7 @@ public class mainactivity extends Activity {
             intent.putExtra("com.termux.RUN_COMMAND_WORKDIR", "/data/data/com.termux/files/home");
             intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", true);
             intent.putExtra("com.termux.RUN_COMMAND_COMMAND_LABEL", "Workspace");
+            intent.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", new String[]{"--app"});
             startForegroundService(intent);
             checkruntime(value, true);
         } catch (Exception error) {
@@ -241,6 +286,7 @@ public class mainactivity extends Activity {
     }
 
     private void showworkspace(String value) {
+        attachruntime(value);
         origin = "http://127.0.0.1:8765";
         browser = new workview(this);
         if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) WebView.setWebContentsDebuggingEnabled(true);
@@ -333,11 +379,9 @@ public class mainactivity extends Activity {
 
     private void displaymenu(View anchor) {
         android.widget.PopupMenu menu = new android.widget.PopupMenu(this, anchor);
-        for (int value : new int[]{40, 50, 60, 70, 80, 90, 100}) menu.getMenu().add(0, value, value, "Interface scale: " + value + "%");
+        for (int value : new int[]{40, 50, 60, 66, 70, 80, 90, 100}) menu.getMenu().add(0, value, value, "Interface scale: " + value + "%");
         menu.getMenu().add(0, 201, 201, "Show keyboard");
         menu.getMenu().add(0, 202, 202, "Hide keyboard");
-        menu.getMenu().add(0, 203, 203, "Hide system bars");
-        menu.getMenu().add(0, 204, 204, "Show system bars");
         menu.getMenu().add(0, 205, 205, "Connection");
         menu.setOnMenuItemClickListener(item -> {
             int action = item.getItemId();
@@ -434,6 +478,8 @@ public class mainactivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        closing = true;
+        try {if (lease != null) lease.close();} catch (Exception error) {}
         attempt++;
         if (picker != null) picker.onReceiveValue(null);
         if (browser != null) browser.destroy();

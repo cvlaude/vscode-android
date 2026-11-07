@@ -1,2 +1,26 @@
 .monaco-sash, .tabs-container .tab, .pane-header[draggable="true"] {touch-action: none}
 .workspacedrag {pointer-events: none !important}
+.workspaceghost {
+  position: fixed; z-index: 100000;
+  left: 0; top: 0;
+  padding: 7px 12px; max-width: 260px;
+  color: #cccccc; background: #252526;
+  border: 1px solid #0078d4; border-radius: 3px;
+  font-size: 13px; pointer-events: none;
+  overflow: hidden; white-space: nowrap;
+  text-overflow: ellipsis; box-shadow: 0 3px 14px rgba(0,0,0,0.4);
+}
+.tab .tab-actions {opacity: 1 !important}
+.workspaceclose {
+  display: inline-flex; align-items: center;
+  justify-content: center; width: 26px;
+  height: 26px; padding: 4px;
+  border: 0; border-radius: 3px;
+  color: #cccccc; background: transparent;
+  cursor: pointer; flex-shrink: 0;
+}
+.workspaceclose:hover {background: #313131}
+.workspaceclose svg {
+  width: 18px; height: 18px;
+  fill: currentColor; pointer-events: none;
+}

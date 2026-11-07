@@ -158,6 +158,11 @@ export function createserver({config, state, store, filename}, {port = 8765, lan
         if (request.method === "GET" && request.url === "/api/mirrors") return json(response, 200, await mirrorstatus(state));
         if (request.method !== "POST") return json(response, 405, {error: "POST required"});
         const value = JSON.parse((await body(request)).toString() || "{}");
+        if (request.url === "/api/viewcommand") {
+          if (!["closesidebar", "closeauxiliary", "closegroup"].includes(value.view)) throw new Error("Unknown view action");
+          atomic(path.join(state, "view.request.json"), JSON.stringify({view: value.view}));
+          return json(response, 200, {requested: true});
+        }
         if (request.url === "/api/config") {
           if (operation.active) throw new Error("Wait for the current operation to finish");
           if (value.peer !== undefined) {

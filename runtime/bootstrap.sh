@@ -12,7 +12,7 @@ if [ -e "$HOME/storage" ]; then
   echo "Remove Termux's shared-storage grant in Android settings before setting up the isolated workspace."
   exit 1
 fi
-pkg install -y proot-distro python
+pkg install -y proot-distro python syncthing
 if ! proot-distro login debian --isolated -- /bin/true >/dev/null 2>&1; then
   proot-distro install debian
 fi
@@ -22,7 +22,7 @@ mkdir -p "$HOME/.local/bin"
 cat > "$HOME/.local/bin/workspace" <<'LAUNCHER'
 #!/data/data/com.termux/files/usr/bin/bash
 set -eu
-exec proot-distro login debian --isolated -- /bin/bash /opt/workspace-install/runtime/start.sh
+exec python "$PREFIX/var/lib/proot-distro/containers/debian/rootfs/opt/workspace-install/runtime/lifecycle.py" "$@"
 LAUNCHER
 chmod 700 "$HOME/.local/bin/workspace"
 python "$project/runtime/commands.py"

@@ -2,6 +2,38 @@
   if (window.workspacetouch) return;
   window.workspacetouch = true;
   let gesture;
+  let animation;
+
+  function closebutton(target, view) {
+    if (!target || target.querySelector(".workspaceclose")) return;
+    const button = document.createElement("button");
+    button.className = "workspaceclose";
+    button.title = view === "closegroup" ? "Close editor group" : "Close pane";
+    button.setAttribute("aria-label", button.title);
+    button.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m18.3 5.71-1.41-1.42L12 9.17 7.11 4.29 5.7 5.71 10.59 10.6 5.7 15.49l1.41 1.42L12 12.02l4.89 4.89 1.41-1.42-4.89-4.89z"/></svg>';
+    button.addEventListener("click", async event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const tab = target.closest(".editor-group-container")?.querySelector(".tab.active");
+      if (tab) {mouse(tab, "mousedown", event, true); mouse(window, "mouseup", event, false)}
+      const result = await fetch("/api/viewcommand", {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({view})});
+      if (!result.ok) button.title = "Could not close pane";
+    });
+    target.append(button);
+  }
+
+  function controls() {
+    document.querySelectorAll(".editor-group-container > .title .editor-actions").forEach(target => closebutton(target, "closegroup"));
+    document.querySelectorAll(".part.sidebar > .composite.title .title-actions").forEach(target => closebutton(target, "closesidebar"));
+    document.querySelectorAll(".part.auxiliarybar > .composite.title .title-actions").forEach(target => closebutton(target, "closeauxiliary"));
+  }
+
+  let updating;
+  new MutationObserver(() => {
+    clearTimeout(updating);
+    updating = setTimeout(controls, 100);
+  }).observe(document.body, {childList: true, subtree: true});
+  controls();
 
   /*//////////////////////////////////////////////////////////////////////*/
 
@@ -27,12 +59,22 @@
 
   function droptarget(point) {
     const elements = document.elementsFromPoint(point.clientX, point.clientY);
-    const target = elements.find(element => element.closest(".editor-group-container")) || elements[0];
-    const group = target?.closest(".editor-group-container");
-    if (gesture.source.matches(".tab") && group && !target.closest(".tabs-container")) {
-      return group.querySelector(".tabs-container .tab:last-child") || group.querySelector(".tabs-container") || target;
+    return elements.find(element => element.closest(".editor-group-container")) || elements[0];
+  }
+
+  function move(point) {
+    if (!gesture?.started) return;
+    gesture.ghost.style.transform = `translate(${point.clientX + 12}px,${point.clientY + 12}px)`;
+    let target = droptarget(point);
+    const scope = target?.closest(".editor-group-container, .pane, .part") || target;
+    if (scope !== gesture.scope) {
+      drag(gesture.target, "dragleave", point);
+      gesture.scope = scope;
+      drag(target, "dragenter", point);
     }
-    return target;
+    target = droptarget(point);
+    gesture.target = target;
+    drag(target, "dragover", point);
   }
 
   function sash(point) {
@@ -52,11 +94,13 @@
   function finish(point, cancelled) {
     if (!gesture) return;
     clearTimeout(gesture.timer);
+    cancelAnimationFrame(animation);
     if (gesture.kind === "resize") mouse(window, "mouseup", point, false);
     else if (gesture.started) {
-      if (!cancelled) drag(droptarget(point), "drop", point);
+      if (!cancelled) {move(point); drag(droptarget(point), "drop", point)}
       drag(gesture.source, "dragend", point);
     }
+    gesture.ghost?.remove();
     frames(false);
     gesture = null;
   }
@@ -84,8 +128,13 @@
       pending.transfer = new DataTransfer();
       pending.transfer.effectAllowed = "move";
       pending.transfer.dropEffect = "move";
+      pending.ghost = document.createElement("div");
+      pending.ghost.className = "workspaceghost";
+      pending.ghost.textContent = source.querySelector(".label-name")?.textContent || source.textContent.trim();
+      document.body.append(pending.ghost);
       frames(true);
       drag(source, "dragstart", pending.point);
+      move(pending.point);
     }, 300);
   }, {capture: true, passive: false});
 
@@ -102,13 +151,8 @@
     gesture.point = point;
     if (gesture.kind === "resize") mouse(window, "mousemove", point, true);
     else {
-      const target = droptarget(point);
-      if (target !== gesture.target) {
-        drag(gesture.target, "dragleave", point);
-        drag(target, "dragenter", point);
-        gesture.target = target;
-      }
-      drag(target, "dragover", point);
+      cancelAnimationFrame(animation);
+      animation = requestAnimationFrame(() => move(point));
     }
   }, {capture: true, passive: false});
 
