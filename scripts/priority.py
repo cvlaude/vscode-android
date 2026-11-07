@@ -4,6 +4,7 @@ import os
 import pathlib
 import subprocess
 import time
+from commands import capture
 
 ##########################################################################
 
@@ -17,9 +18,16 @@ def refresh(repositories, destination):
         repo = repositories / name
         target = destination / name
         target.mkdir(parents=True, exist_ok=True)
-        result = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard", "--exclude=.claude/", "--exclude=node_modules/", "-z"], cwd=repo, capture_output=True, check=True, timeout=60)
+        try:
+            result = capture(["git", "ls-files", "--cached", "--others", "--exclude-standard", "--exclude=.claude/", "--exclude=node_modules/", "-z"], cwd=repo, timeout=15)
+            names = result.stdout.decode("utf-8").split("\0")
+        except subprocess.TimeoutExpired:
+            previous = target / "priority.json"
+            names = json.loads(previous.read_text())["files"] if previous.exists() else []
+            if not names:
+                raise
         selected = set()
-        for relative in dict.fromkeys(result.stdout.decode("utf-8").split("\0")):
+        for relative in dict.fromkeys(names):
             if not relative:
                 continue
             path = pathlib.PurePosixPath(relative)

@@ -11,3 +11,5 @@ dist/
 *.keystore
 auth.json
 packages/
+__pycache__/
+*.pyc

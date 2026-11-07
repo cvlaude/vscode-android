@@ -3,14 +3,14 @@ import datetime
 import json
 import os
 import pathlib
-import subprocess
 import time
+from commands import capture
 
 ##########################################################################
 
 def refresh(source, destination, days):
     cutoff = time.time() - days * 86400
-    result = subprocess.run(["rg", "--files", "--hidden", "-g", "*.jsonl", str(source / "sessions")], capture_output=True, text=True, check=True, timeout=30)
+    result = capture(["rg", "--files", "--hidden", "-g", "*.jsonl", str(source / "sessions")], text=True, timeout=30)
     selected = []
     destination.mkdir(parents=True, exist_ok=True)
     for name in result.stdout.splitlines():
