@@ -63,8 +63,11 @@ test("code copies restore without Git and upgrade without overwriting competing 
     atomic(path.join(previous.repo, "phone.txt"), "phone addition\n");
     atomic(path.join(source.repo, "index.html"), "pc\n");
     git(source.repo, ["add", "index.html"]);
+    atomic(path.join(source.repo, ".git", "logs", "HEAD"), `${"0".repeat(40)} ${"1".repeat(40)} example <example@example.invalid> 1 +0000\told desktop entry\n`);
     const destination = await openmirror({state, name: "site", kind: "repository"});
     assert.ok(!fs.existsSync(path.join(destination.repo, ".claude")));
+    assert.ok(!fs.existsSync(path.join(destination.repo, ".git", "logs")));
+    assert.ok(fs.existsSync(path.join(source.repo, ".git", "logs", "HEAD")));
     const result = upgradephone({state, previous, destination});
     assert.deepEqual(result.conflicts, ["index.html"]);
     assert.equal(fs.readFileSync(path.join(destination.repo, "index.html"), "utf8"), "pc\n");

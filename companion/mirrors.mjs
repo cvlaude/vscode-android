@@ -37,7 +37,7 @@ function copy(source, target, relative = "") {
   fs.mkdirSync(target, {recursive: true});
   for (const entry of fs.readdirSync(source, {withFileTypes: true})) {
     if ([".claude", ".stfolder", ".stignore", ".stversions", "priority.json"].includes(entry.name) || entry.name.startsWith(".syncthing.")) continue;
-    if (relative === ".git/" && ["config", "hooks", "worktrees"].includes(entry.name)) continue;
+    if (relative === ".git/" && ["config", "hooks", "worktrees", "logs"].includes(entry.name)) continue;
     const filename = contained(source, entry.name);
     const destination = contained(target, entry.name);
     if (entry.isDirectory()) copy(filename, destination, relative + entry.name + "/");
@@ -63,7 +63,7 @@ export async function openmirror({state, name, kind}) {
   if (kind === "code") {
     const receipt = JSON.parse(fs.readFileSync(path.join(source, "priority.json"), "utf8"));
     for (const filename of receipt.files) if (!fs.statSync(contained(source, filename)).isFile()) throw new Error("Code copy is incomplete");
-  } else git(source, ["fsck", "--full", "--no-dangling"]);
+  } else git(source, ["fsck", "--full", "--no-dangling", "--no-reflogs"]);
   const root = config.workspaces || path.join(os.homedir(), "workspaces");
   const destination = path.join(root, `${name}-${Date.now()}`);
   const repo = path.join(destination, "repo");
