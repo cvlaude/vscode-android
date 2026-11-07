@@ -1,0 +1,10 @@
+<resources>
+    <style name="workspacetheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#0078d4</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">#181818</item>
+        <item name="android:navigationBarColor">#181818</item>
+        <item name="android:windowBackground">#1f1f1f</item>
+    </style>
+</resources>

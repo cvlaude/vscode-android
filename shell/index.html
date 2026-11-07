@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="dark">
+    <title>Workspace - Android</title>
+    <link rel="stylesheet" href="shell.css">
+    <script src="shell.js" defer></script>
+  </head>
+  <body>
+    <header class="titlebar">
+      <svg class="appicon" aria-hidden="true"><use href="icons.svg#editor"></use></svg>
+      <button class="menubutton" data-action="menu">File</button>
+      <button class="menubutton" data-action="settings">View</button>
+      <div class="commandcenter"><svg aria-hidden="true"><use href="icons.svg#search"></use></svg><span class="workspacename">Workspace</span></div>
+      <button class="iconbutton" data-action="settings" aria-label="Connection settings"><svg><use href="icons.svg#settings"></use></svg></button>
+    </header>
+    <main class="layout">
+      <aside class="sidebar">
+        <div class="panelheading">EXPLORER</div>
+        <div class="workspaceheading"><svg><use href="icons.svg#expand"></use></svg><strong class="reponame">No folder selected</strong></div>
+        <button class="treerow active" data-action="home"><svg><use href="icons.svg#folder"></use></svg>Workspace</button>
+        <button class="treerow" data-action="capture"><svg><use href="icons.svg#save"></use></svg>Save snapshot</button>
+        <button class="treerow" data-action="pull"><svg><use href="icons.svg#sync"></use></svg>Receive changes</button>
+        <button class="treerow" data-action="settings"><svg><use href="icons.svg#settings"></use></svg>Connection</button>
+        <div class="sidefooter"><svg><use href="icons.svg#device"></use></svg><span class="devicename">Local device</span></div>
+      </aside>
+      <section class="editorpanel">
+        <div class="tabs"><div class="tab"><svg><use href="icons.svg#sync"></use></svg>Workspace continuity<button class="iconbutton small" data-action="home" aria-label="Refresh"><svg><use href="icons.svg#refresh"></use></svg></button></div></div>
+        <div class="editorcontent">
+          <section class="homepage">
+            <h1 class="reponame">Workspace</h1>
+            <p class="subtitle">Continue on this device</p>
+            <div class="actions">
+              <button class="primary openworkbench" data-action="open"><svg><use href="icons.svg#editor"></use></svg>Open editor</button>
+              <button class="secondary" data-action="restore"><svg><use href="icons.svg#folder"></use></svg>Create working copy</button>
+            </div>
+            <div class="sectionheading">SNAPSHOT</div>
+            <dl class="snapshotdetails">
+              <div><dt>Saved</dt><dd class="savedtime">No snapshot yet</dd></div>
+              <div><dt>Files</dt><dd class="filecount">0</dd></div>
+              <div><dt>Size</dt><dd class="snapshotsize">0 B</dd></div>
+              <div><dt>Transfer limit</dt><dd class="ratelabel">5 KB/s</dd></div>
+            </dl>
+            <div class="sectionheading">TRANSFER</div>
+            <div class="transferrow"><span class="operationmessage">Connecting</span><span class="progresslabel"></span></div>
+            <progress class="transferprogress" max="1" value="0" aria-label="Transfer progress"></progress>
+            <p class="errormessage" role="alert"></p>
+            <div class="actions">
+              <button class="secondary" data-action="capture"><svg><use href="icons.svg#save"></use></svg>Save snapshot</button>
+              <button class="secondary" data-action="pull"><svg><use href="icons.svg#sync"></use></svg>Receive changes</button>
+            </div>
+          </section>
+          <form class="settingspage hidden">
+            <h1>Connection</h1>
+            <label>Other device address<input class="peerinput" type="url" placeholder="http://192.168.1.4:8765" autocomplete="off"></label>
+            <label>Pairing secret<input class="secretinput" type="password" minlength="16" placeholder="Keep existing secret" autocomplete="off"></label>
+            <label>Transfer limit<select class="rateinput"><option value="5120">5 KB/s</option><option value="20480">20 KB/s</option><option value="102400">100 KB/s</option><option value="0">Unlimited</option></select></label>
+            <div class="actions"><button class="primary" type="submit">Save</button><button class="secondary" type="button" data-action="home">Cancel</button></div>
+          </form>
+        </div>
+      </section>
+      <aside class="agentpanel">
+        <div class="tabs"><div class="tab"><svg><use href="icons.svg#terminal"></use></svg>Codex</div></div>
+        <div class="agentcontent">
+          <h2>Local workspace</h2>
+          <p class="localpath">Select a repository in the companion.</p>
+          <div class="agentstate"><span class="dot"></span><span>Runtime on this device</span></div>
+          <div class="sectionheading">WORKBENCH</div>
+          <button class="linkbutton" data-action="open">Open Codex in editor<svg><use href="icons.svg#forward"></use></svg></button>
+          <button class="linkbutton" data-action="open">Open Desktop SCM<svg><use href="icons.svg#forward"></use></svg></button>
+        </div>
+        <div class="agentfooter"><svg><use href="icons.svg#lock"></use></svg>Workspace permissions</div>
+      </aside>
+    </main>
+    <footer class="statusbar"><span><svg><use href="icons.svg#device"></use></svg><span class="connectionlabel">Local</span></span><span class="statusmessage" aria-live="polite">Ready</span><button data-action="settings"><svg><use href="icons.svg#sync"></use></svg><span class="ratelabel">5 KB/s</span></button></footer>
+  </body>
+</html>
