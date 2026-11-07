@@ -34,17 +34,22 @@ export function authorize(request, secret, seen, body) {
   return true;
 }
 
-async function signedfetch(peer, secret, route, options = {}) {
+async function signedfetch(peer, secret, route, options = {}, retried = false) {
   const url = new URL(peer);
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.pathname !== "/") throw new Error("Use a peer origin such as http://192.168.1.4:8765");
   const method = options.method || "GET";
   const body = options.body || Buffer.alloc(0);
   const nonce = `${Date.now()}:${crypto.randomBytes(16).toString("hex")}`;
-  const response = await fetch(new URL(route, url), {
+  let response;
+  try {response = await fetch(new URL(route, url), {
     method, redirect: "error", signal: AbortSignal.timeout(90000),
     headers: {"x-continuity-nonce": nonce, "x-continuity-proof": proof(secret, method, route, nonce, body)},
     ...(method === "GET" ? {} : {body})
-  });
+  })} catch (error) {
+    if (retried || method !== "GET") throw error;
+    await new Promise(resolve => setTimeout(resolve, 250));
+    return signedfetch(peer, secret, route, options, true);
+  }
   if (!response.ok) throw new Error(`Peer returned ${response.status}`);
   const value = Buffer.from(await response.arrayBuffer());
   if (value.length > 64 * 1024 * 1024) throw new Error("Peer response is too large");
@@ -63,7 +68,7 @@ export async function pull({peer, secret, store, rate = 5120, onprogress = () =>
   for (const hash of hashes) {
     try {getchunk(store, hash); reused += 1; continue} catch {}
     const started = Date.now();
-    const packet = await signedfetch(peer, secret, `/sync/chunk/${hash}`);
+    const packet = await signedfetch(peer, secret, `/sync/chunk/${manifest.id}/${hash}`);
     const value = zlib.gunzipSync(decrypt(packet, key, `chunk:${hash}`), {maxOutputLength: 16384});
     if (digest(value) !== hash) throw new Error("Peer chunk checksum mismatch");
     putchunk(store, value);

@@ -112,6 +112,16 @@ test("authenticated LAN pull deduplicates chunks and rejects wrong secrets and r
     assert.equal(second.received, 0);
     assert.equal(second.bytes, 0);
     assert.equal(second.reused, first.received + first.reused);
+    atomic(path.join(source.repo, "large.bin"), "edited while an older snapshot is downloading");
+    const updated = capture(source);
+    atomic(path.join(source.store, "published.json"), JSON.stringify(manifest));
+    const frozen = await pull({peer, secret, store: path.join(source.folder, "frozen"), rate: 0, onprogress: () => {
+      atomic(path.join(source.store, "published.json"), JSON.stringify(updated));
+    }});
+    assert.equal(frozen.manifest.id, manifest.id);
+    assert.notEqual(updated.id, manifest.id);
+    const current = await pull({peer, secret, store, rate: 0});
+    assert.equal(current.manifest.id, updated.id);
     assert.equal((await fetch(`${peer}/api/status`)).status, 401);
     const status = await fetch(`${peer}/api/status`, {headers: {authorization: `Bearer ${instance.localkey}`}});
     assert.equal(status.status, 200);

@@ -45,6 +45,16 @@ export function createserver({config, state, store, filename}, {port = 8765, lan
   let upstreamcookie = "";
   let keysecret = "";
   let cachedkey;
+  const manifests = new Map();
+  const savedmanifest = id => {
+    if (!/^[a-f0-9-]{36}$/.test(id)) throw new Error("Invalid snapshot identity");
+    if (!manifests.has(id)) {
+      const manifest = JSON.parse(fs.readFileSync(path.join(store, "snapshots", `${id}.json`), "utf8"));
+      manifests.set(id, {manifest, chunks: new Set(Object.values(manifest.files).flatMap(entry => entry.chunks))});
+      if (manifests.size > 8) manifests.delete(manifests.keys().next().value);
+    }
+    return manifests.get(id);
+  };
   const authenticated = request => {
     if (!loopback(request)) return false;
     const candidate = request.headers.authorization?.replace(/^Bearer /, "") || (request.headers.cookie || "").split("; ").find(value => value.startsWith("continuity="))?.slice(11);
@@ -65,15 +75,19 @@ export function createserver({config, state, store, filename}, {port = 8765, lan
         const bytes = await body(request);
         if (!authorize(request, config.secret, seen, bytes)) return json(response, 401, {error: "Pairing proof required"});
         if (request.method !== "GET") return json(response, 405, {error: "Read only peer"});
-        const manifest = published();
         if (keysecret !== config.secret) {cachedkey = packetkey(config.secret, config.salt); keysecret = config.secret}
         const key = cachedkey;
         let packet;
-        if (request.url === "/sync/info") return json(response, 200, {salt: config.salt, id: manifest.id});
-        if (request.url === `/sync/manifest/${manifest.id}`) packet = encrypt(Buffer.from(JSON.stringify(manifest)), key, `manifest:${manifest.id}`);
-        else if (/^\/sync\/chunk\/[a-f0-9]{64}$/.test(request.url)) {
+        if (request.url === "/sync/info") return json(response, 200, {salt: config.salt, id: published().id});
+        const manifestmatch = request.url.match(/^\/sync\/manifest\/([a-f0-9-]{36})$/);
+        const chunkmatch = request.url.match(/^\/sync\/chunk\/([a-f0-9-]{36})\/([a-f0-9]{64})$/);
+        if (manifestmatch) {
+          const manifest = savedmanifest(manifestmatch[1]).manifest;
+          packet = encrypt(Buffer.from(JSON.stringify(manifest)), key, `manifest:${manifest.id}`);
+        }
+        else if (chunkmatch) {
           const hash = request.url.split("/").at(-1);
-          if (!Object.values(manifest.files).some(entry => entry.chunks.includes(hash))) return json(response, 404, {error: "Chunk is not in current snapshot"});
+          if (!savedmanifest(chunkmatch[1]).chunks.has(hash)) return json(response, 404, {error: "Chunk is not in this snapshot"});
           packet = encrypt(zlib.gzipSync(getchunk(store, hash)), key, `chunk:${hash}`);
         } else return json(response, 404, {error: "Snapshot not found"});
         response.writeHead(200, {"content-type": "application/octet-stream", "cache-control": "no-store"});
@@ -201,6 +215,7 @@ export function createserver({config, state, store, filename}, {port = 8765, lan
           }
           let folder = (config.repo || selected).replaceAll("\\", "/");
           if (/^[a-zA-Z]:\//.test(folder)) folder = `/${folder}`;
+          if (["codex", "scm"].includes(value.view)) atomic(path.join(state, "view.request.json"), JSON.stringify({view: value.view, id: crypto.randomUUID()}));
           return json(response, 200, {url: `/workbench/?folder=${encodeURIComponent(folder)}`});
         } else return json(response, 404, {error: "Unknown command"});
         return json(response, 202, {started: true});
