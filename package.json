@@ -1,0 +1,13 @@
+{
+  "name": "vscode-android",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=22"},
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "start": "node companion/cli.mjs serve",
+    "check": "node scripts/check.mjs"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,12 @@
+.claude/
+node_modules/
+.gradle/
+android/local.properties
+android/app/build/
+android/build/
+dist/
+*.handoff
+*.key
+*.jks
+*.keystore
+auth.json
