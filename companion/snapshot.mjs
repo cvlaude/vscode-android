@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import {spawnSync as spawn} from "node:child_process";
-import {atomic, contained, chunkfile, chunkpath, hashpath, writeentry, readentry, digest} from "./storage.mjs";
+import {atomic, contained, chunkfile, chunkpath, hashpath, writeentry, readentry, digest, beginchunks, endchunks} from "./storage.mjs";
 
 /*//////////////////////////////////////////////////////////////////////*/
 
@@ -73,10 +73,13 @@ export function capture(options) {
   try {
     fs.writeFileSync(descriptor, JSON.stringify({pid: process.pid, started: Date.now()}));
     fs.fsyncSync(descriptor);
+    beginchunks(options.store);
     return capturefiles(options);
   } finally {
-    fs.closeSync(descriptor);
-    fs.renameSync(lock, path.join(options.store, "capture.lastlock"));
+    try {endchunks(options.store)} finally {
+      fs.closeSync(descriptor);
+      fs.renameSync(lock, path.join(options.store, "capture.lastlock"));
+    }
   }
 }
 
@@ -147,6 +150,7 @@ function capturefiles({repo, store, sessions = [], codexhome, profile, name: pro
   if (!transplanted && previous?.source === repo && JSON.stringify(previous.files) === JSON.stringify(files) && JSON.stringify(previous.omitted) === JSON.stringify(omitted)) return previous;
   const manifest = {version: 1, id: crypto.randomUUID(), created: new Date().toISOString(), name: projectname || path.basename(repo), source: repo, objectidentity, objects: [...objectids], files, omitted};
   validate(manifest);
+  endchunks(store);
   atomic(path.join(store, "snapshots", `${manifest.id}.json`), JSON.stringify(manifest));
   atomic(path.join(store, "latest.json"), JSON.stringify(manifest));
   atomic(path.join(store, "published.json"), JSON.stringify(manifest));

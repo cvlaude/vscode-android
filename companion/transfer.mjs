@@ -3,7 +3,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import readline from "node:readline";
 import zlib from "node:zlib";
-import {atomic, derivekey, encrypt, decrypt, getchunk, putchunk, digest} from "./storage.mjs";
+import {atomic, derivekey, encrypt, decrypt, getchunk, putchunk, digest, beginchunks, endchunks} from "./storage.mjs";
 import {validate} from "./snapshot.mjs";
 
 /*//////////////////////////////////////////////////////////////////////*/
@@ -65,19 +65,23 @@ export async function pull({peer, secret, store, rate = 5120, onprogress = () =>
   let received = 0;
   let reused = 0;
   let bytes = 0;
-  for (const hash of hashes) {
-    try {getchunk(store, hash); reused += 1; continue} catch {}
-    const started = Date.now();
-    const packet = await signedfetch(peer, secret, `/sync/chunk/${manifest.id}/${hash}`);
-    const value = zlib.gunzipSync(decrypt(packet, key, `chunk:${hash}`), {maxOutputLength: 16384});
-    if (digest(value) !== hash) throw new Error("Peer chunk checksum mismatch");
-    putchunk(store, value);
-    received += 1;
-    bytes += packet.length;
-    atomic(path.join(store, "progress.json"), JSON.stringify({snapshot: manifest.id, received, reused, total: hashes.length, bytes}));
-    onprogress({received, reused, total: hashes.length, bytes});
-    if (rate > 0) await new Promise(resolve => setTimeout(resolve, Math.max(0, packet.length * 1000 / rate - (Date.now() - started))));
-  }
+  if (rate === 0) beginchunks(store);
+  try {
+    for (const hash of hashes) {
+      try {getchunk(store, hash); reused += 1; continue} catch {}
+      const started = Date.now();
+      const packet = await signedfetch(peer, secret, `/sync/chunk/${manifest.id}/${hash}`);
+      const value = zlib.gunzipSync(decrypt(packet, key, `chunk:${hash}`), {maxOutputLength: 16384});
+      if (digest(value) !== hash) throw new Error("Peer chunk checksum mismatch");
+      putchunk(store, value);
+      received += 1;
+      bytes += packet.length;
+      if (rate > 0 || received % 128 === 0) atomic(path.join(store, "progress.json"), JSON.stringify({snapshot: manifest.id, received, reused, total: hashes.length, bytes}));
+      onprogress({received, reused, total: hashes.length, bytes});
+      if (rate > 0) await new Promise(resolve => setTimeout(resolve, Math.max(0, packet.length * 1000 / rate - (Date.now() - started))));
+    }
+  } finally {if (rate === 0) endchunks(store)}
+  atomic(path.join(store, "progress.json"), JSON.stringify({snapshot: manifest.id, received, reused, total: hashes.length, bytes}));
   atomic(path.join(store, "snapshots", `${manifest.id}.json`), JSON.stringify(manifest));
   atomic(path.join(store, "latest.json"), JSON.stringify(manifest));
   atomic(path.join(store, "received.json"), JSON.stringify(manifest));
@@ -105,33 +109,37 @@ export function exporthandoff({manifest, store, secret, filename}) {
 }
 
 export async function importhandoff({store, secret, filename}) {
-  const input = readline.createInterface({input: fs.createReadStream(filename), crlfDelay: Infinity});
+  const stream = fs.createReadStream(filename);
+  const input = readline.createInterface({input: stream, crlfDelay: Infinity});
   let header;
   let manifest;
   let key;
   let count = 0;
   let allowed;
-  for await (const line of input) {
-    if (line.length > 64 * 1024 * 1024) throw new Error("Oversized handoff record");
-    const value = JSON.parse(line);
-    if (!header) {
-      if (value.format !== "continuity" || value.version !== 1 || !/^[a-f0-9-]{36}$/.test(value.id)) throw new Error("Unsupported handoff");
-      header = value;
-      key = packetkey(secret, header.salt);
-    } else if (!manifest) {
-      manifest = validate(JSON.parse(decrypt(Buffer.from(value.manifest, "base64"), key, `manifest:${header.id}`)));
-      if (manifest.id !== header.id) throw new Error("Snapshot identity mismatch");
-      allowed = new Set(chunkids(manifest));
-    } else {
-      if (!allowed.has(value.hash)) throw new Error("Unexpected chunk");
-      const bytes = zlib.gunzipSync(decrypt(Buffer.from(value.packet, "base64"), key, `chunk:${value.hash}`), {maxOutputLength: 16384});
-      if (digest(bytes) !== value.hash) throw new Error("Handoff checksum mismatch");
-      putchunk(store, bytes);
-      count += 1;
+  beginchunks(store);
+  try {
+    for await (const line of input) {
+      if (line.length > 64 * 1024 * 1024) throw new Error("Oversized handoff record");
+      const value = JSON.parse(line);
+      if (!header) {
+        if (value.format !== "continuity" || value.version !== 1 || !/^[a-f0-9-]{36}$/.test(value.id)) throw new Error("Unsupported handoff");
+        header = value;
+        key = packetkey(secret, header.salt);
+      } else if (!manifest) {
+        manifest = validate(JSON.parse(decrypt(Buffer.from(value.manifest, "base64"), key, `manifest:${header.id}`)));
+        if (manifest.id !== header.id) throw new Error("Snapshot identity mismatch");
+        allowed = new Set(chunkids(manifest));
+      } else {
+        if (!allowed.has(value.hash)) throw new Error("Unexpected chunk");
+        const bytes = zlib.gunzipSync(decrypt(Buffer.from(value.packet, "base64"), key, `chunk:${value.hash}`), {maxOutputLength: 16384});
+        if (digest(bytes) !== value.hash) throw new Error("Handoff checksum mismatch");
+        putchunk(store, bytes);
+        count += 1;
+      }
     }
-  }
-  if (!manifest) throw new Error("Truncated handoff");
-  for (const hash of allowed) getchunk(store, hash);
+    if (!manifest) throw new Error("Truncated handoff");
+    for (const hash of allowed) getchunk(store, hash);
+  } finally {input.close(); stream.destroy(); endchunks(store)}
   atomic(path.join(store, "snapshots", `${manifest.id}.json`), JSON.stringify(manifest));
   atomic(path.join(store, "latest.json"), JSON.stringify(manifest));
   atomic(path.join(store, "received.json"), JSON.stringify(manifest));

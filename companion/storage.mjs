@@ -2,6 +2,34 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import zlib from "node:zlib";
+import {DatabaseSync as databasesync} from "node:sqlite";
+
+const databases = new Map();
+
+function database(store) {
+  if (!databases.has(store)) {
+    fs.mkdirSync(store, {recursive: true, mode: 0o700});
+    const connection = new databasesync(path.join(store, "chunks.sqlite"));
+    connection.exec("PRAGMA busy_timeout=30000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS chunks (hash TEXT PRIMARY KEY, data BLOB NOT NULL) WITHOUT ROWID");
+    databases.set(store, {connection, insert: connection.prepare("INSERT OR IGNORE INTO chunks VALUES (?, ?)"), select: connection.prepare("SELECT data FROM chunks WHERE hash = ?"), batch: false, pending: 0});
+  }
+  return databases.get(store);
+}
+
+export function beginchunks(store) {
+  const state = database(store);
+  if (state.batch) throw new Error("A chunk batch is already active");
+  state.connection.exec("BEGIN IMMEDIATE");
+  state.batch = true;
+}
+
+export function endchunks(store) {
+  const state = databases.get(store);
+  if (!state?.batch) return;
+  state.connection.exec("COMMIT");
+  state.batch = false;
+  state.pending = 0;
+}
 
 /*//////////////////////////////////////////////////////////////////////*/
 
@@ -49,13 +77,25 @@ export function contained(root, relative) {
 export function putchunk(store, value) {
   const hash = digest(value);
   const target = path.join(store, "chunks", hash);
-  if (!fs.existsSync(target)) atomic(target, zlib.gzipSync(value, {level: 6}));
+  if (!fs.existsSync(target)) {
+    const state = database(store);
+    if (!state.select.get(hash)) {
+      state.insert.run(hash, zlib.gzipSync(value, {level: 6}));
+      if (state.batch && ++state.pending >= 128) {
+        state.connection.exec("COMMIT; BEGIN IMMEDIATE");
+        state.pending = 0;
+      }
+    }
+  }
   return hash;
 }
 
 export function getchunk(store, hash) {
   if (!/^[a-f0-9]{64}$/.test(hash)) throw new Error("Invalid chunk hash");
-  const value = zlib.gunzipSync(fs.readFileSync(path.join(store, "chunks", hash)), {maxOutputLength: 16384});
+  const legacy = path.join(store, "chunks", hash);
+  const packet = fs.existsSync(legacy) ? fs.readFileSync(legacy) : database(store).select.get(hash)?.data;
+  if (!packet) throw new Error("Missing chunk");
+  const value = zlib.gunzipSync(packet, {maxOutputLength: 16384});
   if (digest(value) !== hash) throw new Error("Damaged chunk");
   return value;
 }

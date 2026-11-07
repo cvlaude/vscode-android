@@ -15,22 +15,23 @@ def main():
         outside.write_text("retained", encoding="utf-8")
         script = "import pathlib,sys; p=pathlib.Path(sys.argv[1]); p.write_text('changed')"
         result = subprocess.run(
-            ["codex", "sandbox", "linux", "--", "python3", "-c", script, str(outside)],
+            ["codex", "sandbox", "--", "python3", "-c", script, str(outside)],
             cwd=workspace, capture_output=True, text=True, timeout=45
         )
         inside = subprocess.run(
-            ["codex", "sandbox", "linux", "--", "python3", "-c", "import pathlib; pathlib.Path('inside.txt').write_text('allowed')"],
+            ["codex", "sandbox", "--", "python3", "-c", "import pathlib; pathlib.Path('inside.txt').write_text('allowed')"],
             cwd=workspace, capture_output=True, text=True, timeout=45
         )
         network = subprocess.run(
-            ["codex", "sandbox", "linux", "--", "python3", "-c", "import socket; socket.create_connection(('1.1.1.1',443),timeout=3)"],
+            ["codex", "sandbox", "--", "python3", "-c", "import socket; socket.create_connection(('1.1.1.1',443),timeout=3)"],
             cwd=workspace, capture_output=True, text=True, timeout=45
         )
         passed = result.returncode != 0 and outside.read_text(encoding="utf-8") == "retained" and inside.returncode == 0 and network.returncode != 0
         receipt = {
             "tested": time.time(), "outsideblocked": result.returncode != 0 and outside.read_text(encoding="utf-8") == "retained",
             "workspacewritable": inside.returncode == 0, "networkblocked": network.returncode != 0,
-            "passed": passed, "diagnostic": (result.stderr + inside.stderr + network.stderr)[-6000:]
+            "passed": passed, "returncodes": {"outside": result.returncode, "inside": inside.returncode, "network": network.returncode},
+            "diagnostic": (result.stdout + result.stderr + inside.stdout + inside.stderr + network.stdout + network.stderr)[-6000:]
         }
         destination = pathlib.Path.home() / ".local/share/vscode-android/sandbox.json"
         destination.parent.mkdir(parents=True, exist_ok=True)
