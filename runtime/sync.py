@@ -4,6 +4,7 @@ import os
 import pathlib
 import subprocess
 import xml.etree.ElementTree as xml
+from markers import offline
 
 ##########################################################################
 
@@ -15,10 +16,21 @@ def start():
     home.mkdir(parents=True, exist_ok=True)
     config = home / "config.xml"
     if not config.exists():
-        subprocess.run(["syncthing", "generate", "--home", str(home), "--no-port-probing"], check=True, timeout=30)
+        subprocess.run([str(prefix / "bin/syncthing"), "generate", "--home", str(home), "--no-port-probing"], check=True, timeout=30)
     root = xml.parse(config).getroot()
     if root.find("./gui/address").text != "127.0.0.1:8384":
         raise ValueError("The mirror control API must listen on localhost:8384")
+    marker = home / "runtime.pid"
+    running = False
+    if marker.exists():
+        try:
+            previous = int(marker.read_text())
+            command = pathlib.Path("/proc") / str(previous) / "cmdline"
+            running = str(home).encode() in command.read_bytes()
+        except (ValueError, FileNotFoundError, PermissionError):
+            pass
+    if not running:
+        offline(root, config)
     projects = []
     chats = ""
     folders = root.findall("folder")
@@ -38,16 +50,9 @@ def start():
         os.fsync(stream.fileno())
     temporary.replace(state)
     state.chmod(0o600)
-    marker = home / "runtime.pid"
-    if marker.exists():
-        try:
-            previous = int(marker.read_text())
-            command = pathlib.Path("/proc") / str(previous) / "cmdline"
-            if str(home).encode() in command.read_bytes():
-                return
-        except (ValueError, FileNotFoundError, PermissionError):
-            pass
-    child = subprocess.Popen(["syncthing", "serve", "--home", str(home), "--log-file", str(home / "runtime.log"), "--log-max-size", "2097152", "--log-max-old-files", "2"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, start_new_session=True)
+    if running:
+        return
+    child = subprocess.Popen([str(prefix / "bin/syncthing"), "serve", "--home", str(home), "--log-file", str(home / "runtime.log"), "--log-max-size", "2097152", "--log-max-old-files", "2"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, start_new_session=True)
     with marker.open("w") as stream:
         stream.write(str(child.pid))
         stream.flush()

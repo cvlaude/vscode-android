@@ -5,10 +5,13 @@ import json
 import os
 import pathlib
 import re
+import sys
 import xml.etree.ElementTree as xml
 from commands import capture
 from chats import refresh
 from priority import refresh as refreshcode
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from runtime.markers import create
 
 ##########################################################################
 
@@ -124,6 +127,8 @@ def main():
         folder.set("fsWatcherDelayS", "5")
         folder.set("ignorePerms", "true")
         folder.set("paused", "true" if name in projects else "false")
+        create(path)
+        setting(folder, "markerName", ".claude/.stfolder")
         setting(folder, "order", "smallestFirst")
         setting(folder, "hashers", "1")
         for device in folder.findall("device"):

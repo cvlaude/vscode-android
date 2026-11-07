@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import http from "node:http";
 import {DatabaseSync as databasesync} from "node:sqlite";
 import {fileURLToPath as fileurl} from "node:url";
 import {createRequire as createrequire} from "node:module";
@@ -11,6 +12,8 @@ import {capture, restore, merge, git, validate} from "../companion/snapshot.mjs"
 import {exporthandoff, importhandoff, exportauth, importauth, pull, proof} from "../companion/transfer.mjs";
 import {configuration} from "../companion/config.mjs";
 import {createserver} from "../companion/server.mjs";
+import {openmirror, upgradephone} from "../companion/mirrors.mjs";
+import {importsessions} from "../companion/sessions.mjs";
 
 const root = fileurl(new URL("../.claude/tests/", import.meta.url));
 fs.mkdirSync(root, {recursive: true});
@@ -31,6 +34,73 @@ function fixture(name) {
 }
 
 /*//////////////////////////////////////////////////////////////////////*/
+
+test("code copies restore without Git and upgrade without overwriting competing edits", async () => {
+  const source = fixture("priority");
+  const state = path.join(source.folder, "state");
+  const code = path.join(source.folder, "code");
+  atomic(path.join(code, "index.html"), "base\n");
+  atomic(path.join(code, "priority.json"), JSON.stringify({files: ["index.html"]}));
+  atomic(path.join(code, ".claude", ".stfolder", "marker.txt"), "private marker\n");
+  atomic(path.join(source.repo, ".claude", ".stfolder", "marker.txt"), "private marker\n");
+  const upstream = http.createServer((request, response) => {
+    assert.equal(request.headers["x-api-key"], "fixture");
+    response.end(JSON.stringify({globalFiles: 2, needTotalItems: 0, state: "idle", pullErrors: 0}));
+  });
+  await new Promise(resolve => upstream.listen(0, "127.0.0.1", resolve));
+  atomic(path.join(state, "native-sync.json"), JSON.stringify({endpoint: `http://127.0.0.1:${upstream.address().port}`, key: "fixture", workspaces: path.join(source.folder, "copies"), projects: [{id: "site", name: "site", path: source.repo, code}]}));
+  try {
+    const previous = await openmirror({state, name: "site", kind: "code"});
+    assert.ok(!fs.existsSync(path.join(previous.repo, ".git")));
+    assert.ok(!fs.existsSync(path.join(previous.repo, ".claude")));
+    const baseline = JSON.parse(fs.readFileSync(path.join(previous.activecopy, "baseline.json")));
+    const restored = restore({manifest: baseline, store: path.join(state, "store"), destination: path.join(source.folder, "restoredcode")});
+    assert.equal(restored.filesonly, true);
+    assert.equal(fs.readFileSync(path.join(restored.repo, "index.html"), "utf8"), "base\n");
+    assert.ok(!fs.existsSync(path.join(restored.repo, ".git")));
+    atomic(path.join(previous.repo, "index.html"), "phone\n");
+    assert.equal((await openmirror({state, name: "site", kind: "code"})).repo, previous.repo);
+    atomic(path.join(previous.repo, "phone.txt"), "phone addition\n");
+    atomic(path.join(source.repo, "index.html"), "pc\n");
+    git(source.repo, ["add", "index.html"]);
+    const destination = await openmirror({state, name: "site", kind: "repository"});
+    assert.ok(!fs.existsSync(path.join(destination.repo, ".claude")));
+    const result = upgradephone({state, previous, destination});
+    assert.deepEqual(result.conflicts, ["index.html"]);
+    assert.equal(fs.readFileSync(path.join(destination.repo, "index.html"), "utf8"), "pc\n");
+    assert.equal(fs.readFileSync(path.join(destination.repo, "phone.txt"), "utf8"), "phone addition\n");
+    assert.equal(fs.readFileSync(path.join(code, "index.html"), "utf8"), "base\n");
+    git(destination.repo, ["fsck", "--full"]);
+  } finally {upstream.closeAllConnections(); await new Promise(resolve => upstream.close(resolve))}
+});
+
+test("session imports map Windows paths, retain titles and preserve existing phone conversations", () => {
+  const folder = path.join(session, "sessions");
+  const source = path.join(folder, "source");
+  const destination = path.join(folder, "phone");
+  const id = crypto.randomUUID();
+  const filename = path.join(source, "sessions", "2026", "11", "07", `rollout-${id}.jsonl`);
+  const first = JSON.stringify({type: "session_meta", payload: {id, cwd: "C:\\Users\\example\\Documents\\GitHub\\site"}});
+  const body = JSON.stringify({type: "event_msg", payload: {message: "saved conversation"}}) + "\n";
+  atomic(filename, first + "\n" + body);
+  atomic(path.join(source, "session_index.jsonl"), JSON.stringify({id, thread_name: "Site work"}) + "\n");
+  const repo = path.join(folder, "working");
+  const options = {source, destination, repo: folder, mapping: {"C:/Users/example/Documents/GitHub/site": repo}};
+  const result = importsessions(options);
+  assert.equal(result.sessions.length, 1);
+  const target = result.sessions[0].file;
+  const bytes = fs.readFileSync(target, "utf8");
+  assert.equal(JSON.parse(bytes.split("\n")[0]).payload.cwd, repo);
+  assert.ok(bytes.endsWith(body));
+  assert.ok(fs.readFileSync(path.join(destination, "session_index.jsonl"), "utf8").includes("Site work"));
+  assert.equal(importsessions(options).sessions.length, 0);
+  assert.ok(!fs.existsSync(path.join(destination, "recovery")));
+  atomic(filename, first + "\n" + body + "{}\n");
+  assert.deepEqual(importsessions(options).conflicts, [id]);
+  assert.equal(fs.readFileSync(target, "utf8"), bytes);
+  atomic(path.join(source, "sessions", "damaged.jsonl"), Buffer.alloc(100));
+  assert.equal(importsessions(options).errors.length, 1);
+});
 
 test("unborn repo, Unicode, ignored secrets and staged objects survive encrypted handoff", async () => {
   const source = fixture("unborn");
@@ -165,6 +235,51 @@ test("authenticated LAN pull deduplicates chunks and rejects wrong secrets and r
     const address = `http://127.0.0.1:${restarted.server.address().port}`;
     assert.equal((await fetch(`${address}/api/status`, {headers: {authorization: `Bearer ${instance.localkey}`}})).status, 200);
   } finally {restarted.server.closeAllConnections(); await new Promise(resolve => restarted.server.close(resolve))}
+});
+
+test("workbench adds touch controls and preserves forwarded preview host and origin", async () => {
+  const source = fixture("workbench");
+  const upstream = http.createServer((request, response) => {
+    if (request.url === "/login") {response.writeHead(302, {"set-cookie": "session=fixture; Path=/"}); response.end(); return}
+    if (request.url.startsWith("/proxy/")) {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({host: request.headers.host, origin: request.headers.origin, path: request.url}));
+      return;
+    }
+    response.setHeader("content-type", "text/html");
+    response.end('<html><head><script nonce="fixture123"></script></head><body>workbench</body></html>');
+  });
+  await new Promise(resolve => upstream.listen(0, "127.0.0.1", resolve));
+  const context = configuration(path.join(source.folder, "state"));
+  context.config.repo = source.repo;
+  context.config.workbench = `http://127.0.0.1:${upstream.address().port}`;
+  atomic(path.join(context.state, "workbench-password"), "fixture");
+  const instance = createserver(context, {port: 0});
+  await instance.listen();
+  const peer = `http://127.0.0.1:${instance.server.address().port}`;
+  const headers = {authorization: `Bearer ${instance.localkey}`, "content-type": "application/json"};
+  try {
+    assert.equal((await fetch(`${peer}/?editor=1`)).status, 200);
+    assert.equal((await fetch(`${peer}/touch.js`)).status, 200);
+    const result = await fetch(`${peer}/api/workbench`, {method: "POST", headers, body: "{}"}).then(response => response.json());
+    const page = await fetch(new URL(result.url, peer), {headers}).then(response => response.text());
+    assert.ok(page.includes('nonce="fixture123" src="/touch.js"'));
+    assert.ok(page.includes('href="/touch.css"'));
+    assert.ok(page.includes('nonce="fixture123" src="/display.js"'));
+    assert.ok(page.includes('href="/display.css"'));
+    const preview = await fetch(`${peer}/workbench/proxy/6969/page`, {headers: {...headers, origin: peer}}).then(response => response.json());
+    assert.deepEqual(preview, {host: new URL(peer).host, origin: peer, path: "/proxy/6969/page"});
+    const asset = await fetch(`${peer}/assets/style.css`, {headers: {...headers, referer: `${peer}/workbench/proxy/6969/page`}}).then(response => response.json());
+    assert.equal(asset.path, "/proxy/6969/assets/style.css");
+    const nested = await fetch(`${peer}/assets/font.woff`, {headers: {...headers, referer: `${peer}/assets/style.css`}}).then(response => response.json());
+    assert.equal(nested.path, "/proxy/6969/assets/font.woff");
+    assert.equal((await fetch(`${peer}/assets/private.css`, {headers: {referer: `${peer}/workbench/proxy/6969/page`}})).status, 404);
+    assert.equal((await fetch(`${peer}/assets/private.css`, {headers: {...headers, referer: "https://example.invalid/workbench/proxy/6969/page"}})).status, 404);
+  } finally {
+    instance.server.closeAllConnections();
+    upstream.closeAllConnections();
+    await Promise.all([new Promise(resolve => instance.server.close(resolve)), new Promise(resolve => upstream.close(resolve))]);
+  }
 });
 
 test("truncated handoff never becomes latest and damaged chunks are detected", async () => {

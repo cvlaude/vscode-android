@@ -36,7 +36,7 @@ export async function mirrorstatus(state) {
 function copy(source, target, relative = "") {
   fs.mkdirSync(target, {recursive: true});
   for (const entry of fs.readdirSync(source, {withFileTypes: true})) {
-    if ([".stfolder", ".stignore", ".stversions", "priority.json"].includes(entry.name) || entry.name.startsWith(".syncthing.")) continue;
+    if ([".claude", ".stfolder", ".stignore", ".stversions", "priority.json"].includes(entry.name) || entry.name.startsWith(".syncthing.")) continue;
     if (relative === ".git/" && ["config", "hooks", "worktrees"].includes(entry.name)) continue;
     const filename = contained(source, entry.name);
     const destination = contained(target, entry.name);
@@ -51,7 +51,11 @@ function copy(source, target, relative = "") {
 export async function openmirror({state, name, kind}) {
   const config = configuration(state);
   const project = config.projects.find(item => item.name === name);
-  if (!project || !["code", "repository"].includes(kind)) throw new Error("Select a mirrored project");
+  if (!project || !/^[a-z0-9][a-z0-9.-]{0,127}$/i.test(name) || !["code", "repository"].includes(kind)) throw new Error("Select a mirrored project");
+  const registry = path.join(state, "copies.json");
+  const copies = fs.existsSync(registry) ? JSON.parse(fs.readFileSync(registry, "utf8")) : {};
+  const identity = `${name}/${kind}`;
+  if (copies[identity] && fs.existsSync(copies[identity].repo)) return copies[identity];
   const status = await progress(config, project.id + (kind === "code" ? ".code" : ""));
   if (!status.ready) throw new Error("This copy is still receiving files");
   const source = kind === "code" ? project.code : project.path;
@@ -79,7 +83,10 @@ export async function openmirror({state, name, kind}) {
     git(repo, ["fsck", "--full", "--no-dangling"]);
   }
   atomic(path.join(destination, "mirror.json"), JSON.stringify({name, kind, created: new Date().toISOString()}));
-  return {repo, activecopy: destination, filesonly: kind === "code", workproject: name};
+  const result = {repo, activecopy: destination, filesonly: kind === "code", workproject: name};
+  copies[identity] = result;
+  atomic(registry, JSON.stringify(copies));
+  return result;
 }
 
 export function upgradephone({state, previous, destination}) {
