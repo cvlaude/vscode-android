@@ -47,11 +47,11 @@ public class mainactivity extends Activity {
     private String download;
     private String pendingruntime;
     private volatile int attempt;
-    private int scale = 66;
+    private volatile int scale = 66;
+    private volatile String geometry = "{}";
     private volatile boolean closing;
     private volatile java.net.Socket lease;
     private Thread lifecycle;
-    private TextView scalelabel;
     private final int foreground = Color.rgb(204, 204, 204);
 
     @Override
@@ -59,7 +59,7 @@ public class mainactivity extends Activity {
         super.onCreate(saved);
         if (!getPreferences(MODE_PRIVATE).getBoolean("scaleupdated", false)) getPreferences(MODE_PRIVATE).edit().putInt("scale", 66).putBoolean("scaleupdated", true).apply();
         scale = Math.max(40, Math.min(100, getPreferences(MODE_PRIVATE).getInt("scale", 66)));
-        getWindow().getAttributes().layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+        getWindow().getAttributes().layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
         getWindow().setStatusBarColor(Color.rgb(24, 24, 24));
         getWindow().setNavigationBarColor(Color.rgb(24, 24, 24));
         if (android.os.Build.VERSION.SDK_INT >= 30) {
@@ -121,9 +121,9 @@ public class mainactivity extends Activity {
         frame.addView(content, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         frame.setOnApplyWindowInsetsListener((view, insets) -> {
             if (android.os.Build.VERSION.SDK_INT >= 30) {
-                android.graphics.Insets bars = insets.getInsets(android.view.WindowInsets.Type.displayCutout());
                 android.graphics.Insets keyboard = insets.getInsets(android.view.WindowInsets.Type.ime());
-                view.setPadding(bars.left, bars.top, bars.right, Math.max(bars.bottom, keyboard.bottom));
+                view.setPadding(0, 0, 0, keyboard.bottom);
+                updategeometry();
             }
             return insets;
         });
@@ -291,6 +291,8 @@ public class mainactivity extends Activity {
         browser = new workview(this);
         if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) WebView.setWebContentsDebuggingEnabled(true);
         browser.setBackgroundColor(Color.rgb(31, 31, 31));
+        browser.addJavascriptInterface(new displaybridge(this), "workspaceandroid");
+        browser.addOnLayoutChangeListener((view, left, top, right, bottom, oldleft, oldtop, oldright, oldbottom) -> updategeometry());
         WebSettings settings = browser.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
@@ -305,7 +307,7 @@ public class mainactivity extends Activity {
         browser.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageFinished(WebView view, String url) {
-                if (url.startsWith(origin + "/workbench/")) applyscale();
+                if (url.startsWith(origin + "/")) applyscale();
             }
 
             @Override
@@ -348,24 +350,7 @@ public class mainactivity extends Activity {
             intent.putExtra(Intent.EXTRA_TITLE, "workspace.handoff");
             startActivityForResult(intent, 13);
         });
-        LinearLayout workspace = new LinearLayout(this);
-        workspace.setOrientation(LinearLayout.HORIZONTAL);
-        workspace.addView(browser, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1));
-        LinearLayout controls = new LinearLayout(this);
-        controls.setOrientation(LinearLayout.VERTICAL);
-        android.widget.ImageButton menu = new android.widget.ImageButton(this);
-        menu.setImageResource(R.drawable.workspacecontrols);
-        menu.setBackgroundColor(Color.rgb(24, 24, 24));
-        menu.setContentDescription("Workspace controls");
-        menu.setPadding(pixels(8), pixels(8), pixels(8), pixels(8));
-        menu.setOnClickListener(view -> displaymenu(menu));
-        controls.addView(menu, new LinearLayout.LayoutParams(pixels(40), pixels(40)));
-        scalelabel = label(scale + "%", 10);
-        scalelabel.setGravity(android.view.Gravity.CENTER);
-        scalelabel.setOnClickListener(view -> displaymenu(menu));
-        controls.addView(scalelabel);
-        workspace.addView(controls, new LinearLayout.LayoutParams(pixels(40), ViewGroup.LayoutParams.MATCH_PARENT));
-        showview(workspace);
+        showview(browser);
         browser.loadUrl(Uri.parse(value).buildUpon().appendQueryParameter("editor", "1").build().toString());
     }
 
@@ -374,35 +359,45 @@ public class mainactivity extends Activity {
         double factor = scale / 100.0;
         String script = "(()=>{const viewport=document.querySelector('meta[name=viewport]');if(viewport)viewport.content='width=device-width,initial-scale=" + factor + ",minimum-scale=" + factor + ",maximum-scale=" + factor + ",user-scalable=no';})()";
         browser.evaluateJavascript(script, null);
-        if (scalelabel != null) scalelabel.setText(scale + "%");
     }
 
-    private void displaymenu(View anchor) {
-        android.widget.PopupMenu menu = new android.widget.PopupMenu(this, anchor);
-        for (int value : new int[]{40, 50, 60, 66, 70, 80, 90, 100}) menu.getMenu().add(0, value, value, "Interface scale: " + value + "%");
-        menu.getMenu().add(0, 201, 201, "Show keyboard");
-        menu.getMenu().add(0, 202, 202, "Hide keyboard");
-        menu.getMenu().add(0, 205, 205, "Connection");
-        menu.setOnMenuItemClickListener(item -> {
-            int action = item.getItemId();
-            if (action <= 100) {
-                scale = action;
-                getPreferences(MODE_PRIVATE).edit().putInt("scale", scale).apply();
-                applyscale();
-            } else if (action == 201 || action == 202) {
-                android.view.inputmethod.InputMethodManager keyboard = (android.view.inputmethod.InputMethodManager)getSystemService(INPUT_METHOD_SERVICE);
-                if (action == 201) {browser.requestFocus(); keyboard.showSoftInput(browser, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);}
-                else keyboard.hideSoftInputFromWindow(browser.getWindowToken(), 0);
-            } else if (action == 203 || action == 204) {
-                if (android.os.Build.VERSION.SDK_INT >= 30 && getWindow().getInsetsController() != null) {
-                    getWindow().getInsetsController().setSystemBarsBehavior(android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
-                    if (action == 203) getWindow().getInsetsController().hide(android.view.WindowInsets.Type.systemBars());
-                    else getWindow().getInsetsController().show(android.view.WindowInsets.Type.systemBars());
-                }
-            } else if (action == 205) showconnection();
-            return true;
+    void changescale(int value) {
+        runOnUiThread(() -> {
+            scale = Math.max(40, Math.min(100, value));
+            getPreferences(MODE_PRIVATE).edit().putInt("scale", scale).apply();
+            applyscale();
         });
-        menu.show();
+    }
+
+    int displayscale() {return scale;}
+
+    String displaygeometry() {return geometry;}
+
+    private void updategeometry() {
+        if (browser == null || browser.getWidth() == 0) return;
+        try {
+            android.view.WindowInsets insets = browser.getRootWindowInsets();
+            org.json.JSONObject data = new org.json.JSONObject();
+            data.put("width", browser.getWidth());
+            data.put("height", browser.getHeight());
+            data.put("corner", pixels(24));
+            org.json.JSONArray cutouts = new org.json.JSONArray();
+            if (insets != null && insets.getDisplayCutout() != null) {
+                int[] location = new int[2];
+                browser.getLocationOnScreen(location);
+                for (android.graphics.Rect rect : insets.getDisplayCutout().getBoundingRects()) {
+                    org.json.JSONObject cutout = new org.json.JSONObject();
+                    cutout.put("left", rect.left - location[0]);
+                    cutout.put("top", rect.top - location[1]);
+                    cutout.put("right", rect.right - location[0]);
+                    cutout.put("bottom", rect.bottom - location[1]);
+                    cutouts.put(cutout);
+                }
+            }
+            data.put("cutouts", cutouts);
+            geometry = data.toString();
+            browser.evaluateJavascript("window.dispatchEvent(new Event('workspacegeometry'))", null);
+        } catch (Exception error) {}
     }
 
     /*//////////////////////////////////////////////////////////////////////*/

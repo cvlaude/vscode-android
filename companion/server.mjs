@@ -14,7 +14,7 @@ import {promisify} from "node:util";
 
 const webroot = fileurl(new URL("../shell/", import.meta.url));
 const types = {".html": "text/html", ".css": "text/css", ".js": "text/javascript", ".svg": "image/svg+xml"};
-const routes = {"/": "index.html", "/shell.css": "shell.css", "/shell.js": "shell.js", "/mirrors.js": "mirrors.js", "/touch.js": "touch.js", "/touch.css": "touch.css", "/icons.svg": "icons.svg"};
+const routes = {"/": "index.html", "/shell.css": "shell.css", "/shell.js": "shell.js", "/mirrors.js": "mirrors.js", "/touch.js": "touch.js", "/touch.css": "touch.css", "/display.js": "display.js", "/display.css": "display.css", "/icons.svg": "icons.svg"};
 
 /*//////////////////////////////////////////////////////////////////////*/
 
@@ -278,7 +278,7 @@ export function createserver({config, state, store, filename}, {port = 8765, lan
             result.on("end", () => {
               let html = Buffer.concat(chunks).toString("utf8");
               const nonce = html.match(/<script[^>]*\bnonce="([a-zA-Z0-9+/_=-]+)"/i)?.[1];
-              const controls = `<link rel="stylesheet" href="/touch.css"><script${nonce ? ` nonce="${nonce}"` : ""} src="/touch.js" defer></script>`;
+              const controls = `<link rel="stylesheet" href="/touch.css"><link rel="stylesheet" href="/display.css"><script${nonce ? ` nonce="${nonce}"` : ""} src="/touch.js" defer></script><script${nonce ? ` nonce="${nonce}"` : ""} src="/display.js" defer></script>`;
               html = html.replace("</head>", controls + "</head>");
               const headers = {...result.headers};
               delete headers["content-length"];
