@@ -18,14 +18,22 @@ def refresh(repositories, destination):
         repo = repositories / name
         target = destination / name
         target.mkdir(parents=True, exist_ok=True)
-        try:
-            result = capture(["git", "ls-files", "--cached", "--others", "--exclude-standard", "--exclude=.claude/", "--exclude=node_modules/", "-z"], cwd=repo, timeout=15)
-            names = result.stdout.decode("utf-8").split("\0")
-        except subprocess.TimeoutExpired:
-            previous = target / "priority.json"
-            names = json.loads(previous.read_text())["files"] if previous.exists() else []
-            if not names:
-                raise
+        previous = target / "priority.json"
+        cached = json.loads(previous.read_text()) if previous.exists() else {}
+        names = cached.get("files", [])
+        indexed = (repo / ".git/index").stat().st_mtime_ns
+        discovered = cached.get("discovered", 0)
+        warning = cached.get("warning", "")
+        if indexed != cached.get("indexed") or time.time() - discovered >= 600:
+            discovered = time.time()
+            try:
+                result = capture(["git", "ls-files", "--cached", "--others", "--exclude-standard", "--exclude=.claude/", "--exclude=node_modules/", "-z"], cwd=repo, timeout=15)
+                names = result.stdout.decode("utf-8").split("\0")
+                warning = ""
+            except subprocess.TimeoutExpired:
+                if not names:
+                    raise
+                warning = "File discovery timed out; using the previous file list"
         selected = set()
         for relative in dict.fromkeys(names):
             if not relative:
@@ -49,7 +57,6 @@ def refresh(repositories, destination):
                 output.replace(recovery)
             if not output.exists():
                 os.link(filename, output)
-        previous = target / "priority.json"
         if previous.exists():
             for relative in json.loads(previous.read_text()).get("files", []):
                 filename = target / relative
@@ -57,14 +64,17 @@ def refresh(repositories, destination):
                     recovery = destination.parent / "priorityrecovery" / str(time.time_ns()) / name / relative
                     recovery.parent.mkdir(parents=True, exist_ok=True)
                     filename.replace(recovery)
-        receipt = {"name": name, "source": str(repo), "files": sorted(selected)}
+        receipt = {"name": name, "source": str(repo), "files": sorted(selected), "indexed": indexed, "discovered": discovered, "warning": warning}
+        if receipt == cached:
+            receipts.append({"name": name, "files": len(selected), "warning": warning})
+            continue
         temporary = previous.with_suffix(".pending")
         with temporary.open("w", encoding="utf-8") as stream:
             json.dump(receipt, stream)
             stream.flush()
             os.fsync(stream.fileno())
         temporary.replace(previous)
-        receipts.append({"name": name, "files": len(selected)})
+        receipts.append({"name": name, "files": len(selected), "warning": warning})
     return receipts
 
 ##########################################################################
