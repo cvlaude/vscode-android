@@ -7,6 +7,7 @@ import {atomic} from "./storage.mjs";
 import {capture, restore, merge} from "./snapshot.mjs";
 import {exporthandoff, importhandoff, exportauth, importauth, pull} from "./transfer.mjs";
 import {createserver} from "./server.mjs";
+import {background} from "./worker.mjs";
 
 /*//////////////////////////////////////////////////////////////////////*/
 
@@ -45,6 +46,7 @@ async function main() {
   if (args.command === "configure") {
     if (!args.repo) throw new Error("--repo is required");
     config.repo = fs.realpathSync(args.repo);
+    config.name = path.basename(config.repo);
     if (args.codexhome) config.codexhome = fs.realpathSync(args.codexhome);
     if (args.profile) config.profile = fs.realpathSync(args.profile);
     if (args.sessions.length) config.sessions = args.sessions;
@@ -92,12 +94,16 @@ async function main() {
     let follower;
     if (args.watch) {
       let previous = "";
-      const check = () => {
+      let capturing = false;
+      const check = async () => {
+        if (capturing) return;
+        capturing = true;
         try {
-          const manifest = capture({...config, store});
+          const manifest = await background("capture", {...config, store});
           const identity = JSON.stringify(manifest.files);
           if (identity !== previous) {stdout.write(`Recovery snapshot ${manifest.id}: ${Object.keys(manifest.files).length} files\n`); previous = identity}
         } catch (error) {stdout.write(`Capture pending: ${error.message}\n`)}
+        finally {capturing = false}
       };
       check();
       timer = setInterval(check, 30000);

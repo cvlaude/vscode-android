@@ -10,3 +10,4 @@ dist/
 *.jks
 *.keystore
 auth.json
+packages/

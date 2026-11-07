@@ -75,6 +75,7 @@ export async function pull({peer, secret, store, rate = 5120, onprogress = () =>
   }
   atomic(path.join(store, "snapshots", `${manifest.id}.json`), JSON.stringify(manifest));
   atomic(path.join(store, "latest.json"), JSON.stringify(manifest));
+  atomic(path.join(store, "received.json"), JSON.stringify(manifest));
   return {manifest, received, reused, bytes};
 }
 
@@ -128,6 +129,7 @@ export async function importhandoff({store, secret, filename}) {
   for (const hash of allowed) getchunk(store, hash);
   atomic(path.join(store, "snapshots", `${manifest.id}.json`), JSON.stringify(manifest));
   atomic(path.join(store, "latest.json"), JSON.stringify(manifest));
+  atomic(path.join(store, "received.json"), JSON.stringify(manifest));
   return {manifest, chunks: count};
 }
 

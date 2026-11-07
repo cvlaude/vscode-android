@@ -5,8 +5,11 @@ import crypto from "node:crypto";
 import {fileURLToPath as fileurl} from "node:url";
 import {atomic, encrypt, getchunk} from "./storage.mjs";
 import {capture, restore} from "./snapshot.mjs";
-import {authorize, packetkey, pull} from "./transfer.mjs";
+import {authorize, packetkey, pull, importhandoff, importauth, exporthandoff} from "./transfer.mjs";
 import zlib from "node:zlib";
+import {background} from "./worker.mjs";
+import {execFile as execfile} from "node:child_process";
+import {promisify} from "node:util";
 
 const webroot = fileurl(new URL("../shell/", import.meta.url));
 const types = {".html": "text/html", ".css": "text/css", ".js": "text/javascript", ".svg": "image/svg+xml"};
@@ -86,6 +89,42 @@ export function createserver({config, state, store, filename}, {port = 8765, lan
       if (request.url.startsWith("/api/")) {
         if (!authenticated(request)) return json(response, 401, {error: "Open the local link printed by the companion"});
         if (request.headers.origin && request.headers.origin !== `http://${request.headers.host}`) return json(response, 403, {error: "Invalid origin"});
+        if (request.method === "GET" && request.url === "/api/download") {
+          const archive = path.join(state, "outbox", "workspace.handoff");
+          if (!fs.existsSync(archive)) return json(response, 404, {error: "Export a snapshot first"});
+          response.writeHead(200, {"content-type": "application/octet-stream", "content-disposition": 'attachment; filename="workspace.handoff"', "cache-control": "no-store"});
+          fs.createReadStream(archive).pipe(response);
+          return;
+        }
+        if (request.method === "POST" && ["/api/import", "/api/authimport"].includes(request.url)) {
+          if (operation.active) throw new Error("Another operation is running");
+          operation = {active: true, message: "Receiving file", error: "", progress: null};
+          const archive = path.join(state, "inbox", `${crypto.randomUUID()}.handoff`);
+          fs.mkdirSync(path.dirname(archive), {recursive: true, mode: 0o700});
+          const descriptor = fs.openSync(archive, "wx", 0o600);
+          let size = 0;
+          try {
+            for await (const chunk of request) {
+              size += chunk.length;
+              if (size > 2 * 1024 * 1024 * 1024) throw new Error("Split handoffs larger than 2 GiB");
+              fs.writeSync(descriptor, chunk);
+            }
+            fs.fsyncSync(descriptor);
+          } catch (error) {
+            operation = {active: false, message: "Stopped", error: error.message, progress: null};
+            throw error;
+          } finally {fs.closeSync(descriptor)}
+          operation.active = false;
+          run(async () => {
+            if (request.url === "/api/authimport") {
+              importauth({filename: archive, codexhome: config.codexhome, secret: config.secret});
+              return "Codex credentials imported";
+            }
+            const result = await importhandoff({filename: archive, store, secret: config.secret});
+            return `Imported ${Object.keys(result.manifest.files).length} files`;
+          });
+          return json(response, 202, {started: true});
+        }
         if (request.method === "GET" && request.url === "/api/status") {
           let snapshot = null;
           try {
@@ -113,9 +152,9 @@ export function createserver({config, state, store, filename}, {port = 8765, lan
           atomic(filename, JSON.stringify(config, null, 2));
           return json(response, 200, {saved: true});
         }
-        if (request.url === "/api/capture") run(() => {
+        if (request.url === "/api/capture") run(async () => {
           if (!config.repo) throw new Error("Set the repository with the companion configure command");
-          const manifest = capture({...config, store});
+          const manifest = await background("capture", {...config, store});
           return `Saved ${Object.keys(manifest.files).length} files`;
         });
         else if (request.url === "/api/pull") run(async () => {
@@ -123,15 +162,32 @@ export function createserver({config, state, store, filename}, {port = 8765, lan
           const result = await pull({peer: config.peer, secret: config.secret, store, rate: config.rate, onprogress: progress => {operation.progress = progress; operation.message = "Receiving snapshot"}});
           return `Received ${result.received} chunks; reused ${result.reused}`;
         });
-        else if (request.url === "/api/restore") run(() => {
+        else if (request.url === "/api/restore") run(async () => {
           const manifest = latest();
           const destination = path.join(state, "workspaces", manifest.id);
-          const result = restore({manifest, store, destination});
+          const result = await background("restore", {manifest, store, destination});
           selected = result.repo;
           config.repo = result.repo;
-          config.codexhome = result.codexhome;
+          config.name = manifest.name;
+          config.activecopy = destination;
+          config.pendingsessions = Object.keys(manifest.files).filter(name => name.startsWith("codex/sessions/")).map(name => name.slice(6));
           atomic(filename, JSON.stringify(config, null, 2));
           return `Working copy ready: ${manifest.name}`;
+        });
+        else if (request.url === "/api/sessionsimport") run(async () => {
+          if (!config.activecopy || !config.pendingsessions?.length) throw new Error("Create a working copy containing selected Codex sessions first");
+          const helper = fileurl(new URL("../scripts/importsessions.mjs", import.meta.url));
+          const result = await promisify(execfile)(process.execPath, [helper, "--source", path.join(config.activecopy, "codex"), "--repo", config.repo, "--destination", config.codexhome], {timeout: 180000, windowsHide: true});
+          const receipt = JSON.parse(result.stdout);
+          config.sessions = [...new Set([...config.sessions, ...config.pendingsessions])];
+          atomic(filename, JSON.stringify(config, null, 2));
+          return `Imported ${receipt.imported} sessions; retained ${receipt.conflicts.length} conflicts`;
+        });
+        else if (request.url === "/api/export") run(async () => {
+          const archive = path.join(state, "outbox", "workspace.handoff");
+          fs.mkdirSync(path.dirname(archive), {recursive: true});
+          await background("exporthandoff", {manifest: latest(), store, secret: config.secret, filename: archive});
+          return "Export ready";
         });
         else if (request.url === "/api/workbench") {
           const target = new URL(config.workbench);
@@ -143,7 +199,9 @@ export function createserver({config, state, store, filename}, {port = 8765, lan
             upstreamcookie = login.headers.getSetCookie().map(value => value.split(";")[0]).join("; ");
             if (!upstreamcookie) throw new Error("Local workbench authentication failed");
           }
-          return json(response, 200, {url: `/workbench/?folder=${encodeURIComponent(config.repo || selected)}`});
+          let folder = (config.repo || selected).replaceAll("\\", "/");
+          if (/^[a-zA-Z]:\//.test(folder)) folder = `/${folder}`;
+          return json(response, 200, {url: `/workbench/?folder=${encodeURIComponent(folder)}`});
         } else return json(response, 404, {error: "Unknown command"});
         return json(response, 202, {started: true});
       }
@@ -180,5 +238,11 @@ export function createserver({config, state, store, filename}, {port = 8765, lan
     proxy.on("error", () => socket.destroy());
     proxy.end();
   });
-  return {server, localkey, listen: () => new Promise(resolve => server.listen(port, lan ? "0.0.0.0" : "127.0.0.1", resolve))};
+  return {server, localkey, listen: () => new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, lan ? "0.0.0.0" : "127.0.0.1", () => {
+      atomic(path.join(state, "access.json"), JSON.stringify({origin: `http://127.0.0.1:${server.address().port}`, key: localkey}));
+      resolve();
+    });
+  })};
 }

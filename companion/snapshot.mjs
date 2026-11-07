@@ -29,7 +29,30 @@ function addfile(files, store, name, filename) {
   files[name] = {...chunkfile(store, value), executable: Boolean(before.mode & 0o111)};
 }
 
-export function capture({repo, store, sessions = [], codexhome, profile}) {
+export function capture(options) {
+  fs.mkdirSync(options.store, {recursive: true, mode: 0o700});
+  const lock = path.join(options.store, "capture.lock");
+  if (fs.existsSync(lock)) {
+    let alive = true;
+    try {
+      const owner = JSON.parse(fs.readFileSync(lock, "utf8"));
+      try {process.kill(owner.pid, 0)} catch (error) {if (error.code === "ESRCH") alive = false}
+    } catch {alive = false}
+    if (alive) throw new Error("A recovery snapshot is already being captured");
+    fs.renameSync(lock, path.join(options.store, `capture-stale-${Date.now()}.lock`));
+  }
+  const descriptor = fs.openSync(lock, "wx", 0o600);
+  try {
+    fs.writeFileSync(descriptor, JSON.stringify({pid: process.pid, started: Date.now()}));
+    fs.fsyncSync(descriptor);
+    return capturefiles(options);
+  } finally {
+    fs.closeSync(descriptor);
+    fs.renameSync(lock, path.join(options.store, "capture.lastlock"));
+  }
+}
+
+function capturefiles({repo, store, sessions = [], codexhome, profile, name: projectname}) {
   repo = fs.realpathSync(repo);
   const gitdir = git(repo, ["rev-parse", "--absolute-git-dir"]).toString().trim();
   for (const lock of ["index.lock", "HEAD.lock", "ghdesktop/queue.json.lock"]) {
@@ -56,8 +79,19 @@ export function capture({repo, store, sessions = [], codexhome, profile}) {
   for (const draft of queue.drafts || []) {
     for (const key of ["tree", "basetree", "snapshottree", "basecommit"]) if (draft[key]) objectids.add(draft[key]);
   }
+  const stages = git(repo, ["ls-files", "--stage", "-z"]).toString().split("\0").filter(Boolean);
+  for (const stage of stages) {
+    const match = stage.match(/^\d+ ([a-f0-9]{40,64}) \d\t/);
+    if (match && !/^0+$/.test(match[1])) objectids.add(match[1]);
+  }
   if ([...objectids].some(value => !/^[a-f0-9]{40,64}$/.test(value))) throw new Error("Invalid Git object in queue");
-  if (objectids.size) files["git/objects.pack"] = chunkfile(store, git(repo, ["pack-objects", "--stdout", "--revs"], [...objectids].join("\n") + "\n"));
+  const objectidentity = digest([...objectids].sort().join("\n"));
+  let previous;
+  try {previous = JSON.parse(fs.readFileSync(path.join(store, "published.json")))} catch {}
+  if (objectids.size) {
+    files["git/objects.pack"] = previous?.objectidentity === objectidentity && previous.source === repo && previous.files["git/objects.pack"]
+      ? previous.files["git/objects.pack"] : chunkfile(store, git(repo, ["pack-objects", "--stdout", "--revs"], [...objectids].join("\n") + "\n"));
+  }
   files["git/HEAD"] = chunkfile(store, Buffer.from(head));
   files["git/refs"] = chunkfile(store, Buffer.from(refs));
   files["git/ghdesktop/queue.json"] = chunkfile(store, queuebytes);
@@ -74,9 +108,12 @@ export function capture({repo, store, sessions = [], codexhome, profile}) {
     }
   }
   if (refs !== git(repo, ["for-each-ref", "--format=%(objectname) %(refname)"]).toString() || head !== fs.readFileSync(path.join(gitdir, "HEAD"), "utf8") || (fs.existsSync(queuepath) && !queuebytes.equals(fs.readFileSync(queuepath)))) throw new Error("Repository changed during capture; retry");
-  const manifest = {version: 1, id: crypto.randomUUID(), created: new Date().toISOString(), name: path.basename(repo), source: repo, files, omitted};
+  if (previous?.source === repo && JSON.stringify(previous.files) === JSON.stringify(files) && JSON.stringify(previous.omitted) === JSON.stringify(omitted)) return previous;
+  const manifest = {version: 1, id: crypto.randomUUID(), created: new Date().toISOString(), name: projectname || path.basename(repo), source: repo, objectidentity, files, omitted};
+  validate(manifest);
   atomic(path.join(store, "snapshots", `${manifest.id}.json`), JSON.stringify(manifest));
   atomic(path.join(store, "latest.json"), JSON.stringify(manifest));
+  atomic(path.join(store, "published.json"), JSON.stringify(manifest));
   return manifest;
 }
 
@@ -84,6 +121,8 @@ export function validate(manifest) {
   if (manifest.version !== 1 || !manifest.files || Object.keys(manifest.files).length > 200000 || !/^[a-f0-9-]{36}$/.test(manifest.id)) throw new Error("Invalid snapshot");
   const unique = new Set();
   for (const name of Object.keys(manifest.files)) {
+    const entry = manifest.files[name];
+    if (!entry || !/^[a-f0-9]{64}$/.test(entry.hash) || !Array.isArray(entry.chunks) || !entry.chunks.every(hash => /^[a-f0-9]{64}$/.test(hash)) || !Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > 512 * 1024 * 1024 || entry.chunks.length !== Math.ceil(entry.size / 16384)) throw new Error("Invalid file entry");
     if (!/^(repo|git|codex|profile)\//.test(name)) throw new Error("Invalid snapshot namespace");
     contained(path.resolve("validation"), name);
     const portable = name.toLowerCase();
@@ -101,10 +140,19 @@ export function validate(manifest) {
 
 export function restore({manifest, store, destination}) {
   validate(manifest);
-  if (fs.existsSync(destination) && fs.readdirSync(destination).length) throw new Error("Restore into a new empty folder; use merge for an existing working copy");
+  const marker = path.join(destination, "restore.pending.json");
+  if (fs.existsSync(destination) && fs.readdirSync(destination).length) {
+    if (fs.existsSync(path.join(destination, "receipt.json")) || !fs.existsSync(marker) || JSON.parse(fs.readFileSync(marker)).id !== manifest.id) throw new Error("Restore into a new empty folder; use merge for an existing working copy");
+  }
   fs.mkdirSync(destination, {recursive: true});
+  atomic(marker, JSON.stringify({id: manifest.id}));
   for (const [name, entry] of Object.entries(manifest.files)) {
     const target = contained(destination, name);
+    if (fs.existsSync(target)) {
+      const previous = fs.readFileSync(target);
+      if (digest(previous) === entry.hash) continue;
+      atomic(contained(destination, `recovery/${Date.now()}/${name}`), previous);
+    }
     atomic(target, readentry(store, entry));
     if (entry.executable && process.platform !== "win32") fs.chmodSync(target, 0o700);
   }
@@ -122,6 +170,8 @@ export function restore({manifest, store, destination}) {
   }
   const head = fs.readFileSync(path.join(metadata, "HEAD"), "utf8");
   if (!/^(ref: refs\/[a-zA-Z0-9/._-]+|[a-f0-9]{40,64})\s*$/.test(head)) throw new Error("Invalid HEAD");
+  if (head.startsWith("ref: ")) git(repo, ["check-ref-format", head.trim().slice(5)]);
+  else git(repo, ["cat-file", "-e", head.trim()]);
   atomic(path.join(repo, ".git", "HEAD"), head);
   for (const name of ["index", "ghdesktop/queue.json"]) {
     if (manifest.files[`git/${name}`]) atomic(contained(path.join(repo, ".git"), name), fs.readFileSync(contained(metadata, name)));
