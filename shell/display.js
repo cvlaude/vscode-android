@@ -14,7 +14,7 @@
 
   function menus() {
     for (const list of document.querySelectorAll(".monaco-menu .actions-container")) {
-      const labels = [...list.querySelectorAll(".action-label")].map(item => item.textContent.replaceAll("&", "").trim());
+      const labels = [...list.children].map(item => item.querySelector(":scope > .action-menu-item > .action-label")?.textContent.replaceAll("&", "").trim());
       if (!labels.includes("Appearance") || !labels.includes("Editor Layout") || list.querySelector(".workspacezoom")) continue;
       for (const [label, direction] of [["Zoom In", 1], ["Zoom Out", -1], ["Reset Zoom", 0]]) {
         const row = document.createElement("li");
@@ -56,9 +56,16 @@
       square.className = "workspacecorner workspacecorner" + position;
       document.body.append(square);
     }
-    document.querySelectorAll(".workspacenotchrow, .workspacenotchwebview").forEach(item => item.classList.remove("workspacenotchrow", "workspacenotchwebview"));
-    for (const raw of data.cutouts) {
+    document.querySelectorAll(".workspacenotchrow, .workspacenotchwebview, .workspacenotchheader").forEach(item => item.classList.remove("workspacenotchrow", "workspacenotchwebview", "workspacenotchheader"));
+    const obstacles = [...data.cutouts, {left: 0, top: data.height - data.corner, right: data.corner, bottom: data.height}];
+    for (const raw of obstacles) {
       const cutout = {left: raw.left * horizontal, top: raw.top * vertical, right: raw.right * horizontal, bottom: raw.bottom * vertical};
+      for (const header of document.querySelectorAll(".pane-header")) {
+        const rect = header.getBoundingClientRect();
+        if (!overlap(rect, cutout)) continue;
+        header.style.setProperty("--workspacenotch", Math.max(0, cutout.right - rect.left + 6) + "px");
+        header.classList.add("workspacenotchheader");
+      }
       for (const row of document.querySelectorAll(".monaco-list-row")) {
         const rect = row.getBoundingClientRect();
         if (!overlap(rect, cutout)) continue;
@@ -88,6 +95,12 @@
   }
 
   new MutationObserver(schedule).observe(document.body, {childList: true, subtree: true});
+  document.addEventListener("keydown", event => {
+    if (!event.ctrlKey || event.altKey || !["+", "=", "-", "0"].includes(event.key)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    zoom(event.key === "0" ? 0 : event.key === "-" ? -1 : 1);
+  }, true);
   document.addEventListener("scroll", schedule, true);
   window.addEventListener("resize", schedule);
   window.addEventListener("workspacegeometry", schedule);

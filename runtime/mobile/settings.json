@@ -18,7 +18,7 @@
   "workbench.editor.tabSizing": "shrink",
   "workbench.layoutControl.enabled": false,
   "workbench.sash.size": 20,
-  "window.menuBarVisibility": "classic",
+  "window.menuBarVisibility": "compact",
   "security.workspace.trust.enabled": false,
   "security.workspace.trust.startupPrompt": "never",
   "editor.fontSize": 15,

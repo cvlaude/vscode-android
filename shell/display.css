@@ -16,5 +16,6 @@
 .workspacenotchwebview {
   margin-left: var(--workspacenotch); width: calc(var(--workspacewidth) - var(--workspacenotch)) !important;
 }
+.workspacenotchheader {padding-left: var(--workspacenotch) !important}
 .workspacezoom .action-menu-item {cursor: pointer}
 .workspacezoom .action-menu-item:hover {background: #04395e}

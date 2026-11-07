@@ -22,6 +22,15 @@ mkdir -p "$HOME/.local/bin"
 cat > "$HOME/.local/bin/workspace" <<'LAUNCHER'
 #!/data/data/com.termux/files/usr/bin/bash
 set -eu
+export HOME=/data/data/com.termux/files/home
+export PREFIX=/data/data/com.termux/files/usr
+export PATH="$PREFIX/bin:/system/bin"
+export TMPDIR="$PREFIX/tmp"
+export LD_PRELOAD="$PREFIX/lib/libtermux-exec.so"
+if [ "${1:-}" = "--app" ]; then
+  mkdir -p "$HOME/.local/share/workspace-sync"
+  exec python "$PREFIX/var/lib/proot-distro/containers/debian/rootfs/opt/workspace-install/runtime/lifecycle.py" "$@" >> "$HOME/.local/share/workspace-sync/startup.log" 2>&1
+fi
 exec python "$PREFIX/var/lib/proot-distro/containers/debian/rootfs/opt/workspace-install/runtime/lifecycle.py" "$@"
 LAUNCHER
 chmod 700 "$HOME/.local/bin/workspace"

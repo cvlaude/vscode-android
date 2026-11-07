@@ -1,0 +1,9 @@
+{
+  "codeserver": "4.145.0",
+  "codex": "0.167.0",
+  "node": "22.21.1",
+  "checksums": {
+    "arm64": "425d3bc5167c85dc070427d2aa93760083b02aec852ea9ce75c2906c99138f45",
+    "amd64": "771bf6038658034d7caf509fcc44af50f0b8bdac5e738177b6cf9c4181dd3382"
+  }
+}

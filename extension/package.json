@@ -1,0 +1,22 @@
+{
+  "name": "workspace-mobile",
+  "displayName": "Workspace Mobile",
+  "description": "Touch controls and recovery snapshots for the Android workbench.",
+  "version": "0.1.0",
+  "publisher": "localtools",
+  "license": "MIT",
+  "engines": {"vscode": "^1.96.0"},
+  "main": "./extension.cjs",
+  "extensionKind": ["workspace"],
+  "activationEvents": ["onStartupFinished"],
+  "contributes": {
+    "commands": [
+      {"command": "workspacemobile.explorer", "title": "Workspace Mobile: Explorer"},
+      {"command": "workspacemobile.scm", "title": "Workspace Mobile: Desktop SCM"},
+      {"command": "workspacemobile.preview", "title": "Workspace Mobile: Preview"},
+      {"command": "workspacemobile.codex", "title": "Workspace Mobile: Codex"},
+      {"command": "workspacemobile.snapshot", "title": "Workspace Mobile: Save Recovery Snapshot"},
+      {"command": "workspacemobile.handoff", "title": "Workspace Mobile: Open Handoff"}
+    ]
+  }
+}

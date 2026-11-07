@@ -10,7 +10,7 @@
     button.className = "workspaceclose";
     button.title = view === "closegroup" ? "Close editor group" : "Close pane";
     button.setAttribute("aria-label", button.title);
-    button.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m18.3 5.71-1.41-1.42L12 9.17 7.11 4.29 5.7 5.71 10.59 10.6 5.7 15.49l1.41 1.42L12 12.02l4.89 4.89 1.41-1.42-4.89-4.89z"/></svg>';
+    button.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>';
     button.addEventListener("click", async event => {
       event.preventDefault();
       event.stopPropagation();
@@ -19,13 +19,14 @@
       const result = await fetch("/api/viewcommand", {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({view})});
       if (!result.ok) button.title = "Could not close pane";
     });
+    target.classList.add("workspaceclosetitle");
     target.append(button);
   }
 
   function controls() {
-    document.querySelectorAll(".editor-group-container > .title .editor-actions").forEach(target => closebutton(target, "closegroup"));
-    document.querySelectorAll(".part.sidebar > .composite.title .title-actions").forEach(target => closebutton(target, "closesidebar"));
-    document.querySelectorAll(".part.auxiliarybar > .composite.title .title-actions").forEach(target => closebutton(target, "closeauxiliary"));
+    document.querySelectorAll(".editor-group-container > .title").forEach(target => closebutton(target, "closegroup"));
+    document.querySelectorAll(".part.sidebar > .composite.title").forEach(target => closebutton(target, "closesidebar"));
+    document.querySelectorAll(".part.auxiliarybar > .composite.title").forEach(target => closebutton(target, "closeauxiliary"));
   }
 
   let updating;
@@ -109,6 +110,7 @@
 
   document.addEventListener("touchstart", event => {
     if (event.touches.length !== 1) {if (gesture) finish(gesture.point, true); return}
+    if (gesture) finish(gesture.point, true);
     const point = event.touches[0];
     const handle = sash(point);
     if (handle) {

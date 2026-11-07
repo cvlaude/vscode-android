@@ -57,22 +57,29 @@ def run(required):
                     break
                 continue
             with connection:
-                connection.settimeout(3)
-                expected = (state / "localaccess.key").read_text().strip()
-                provided = bytearray()
-                while len(provided) < 45:
-                    value = connection.recv(1)
-                    if not value or value == b"\n":
-                        break
-                    provided.extend(value)
-                if not hmac.compare_digest(provided, expected.encode()):
+                try:
+                    connection.settimeout(3)
+                    expected = (state / "localaccess.key").read_text().strip()
+                    provided = bytearray()
+                    while len(provided) < 45:
+                        value = connection.recv(1)
+                        if not value or value == b"\n":
+                            break
+                        provided.extend(value)
+                    if not hmac.compare_digest(provided, expected.encode()):
+                        continue
+                    attached = True
+                    connection.settimeout(None)
+                    connection.sendall(b"ready\n")
+                    while connection.recv(1):
+                        pass
+                except (OSError, ConnectionError):
+                    if attached:
+                        deadline = time.monotonic() + 3
+                        required = True
                     continue
-                attached = True
-                connection.settimeout(None)
-                connection.sendall(b"ready\n")
-                while connection.recv(1):
-                    pass
-            break
+            deadline = time.monotonic() + 3
+            required = True
     finally:
         server.close()
         if child.poll() is None:

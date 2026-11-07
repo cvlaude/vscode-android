@@ -53,7 +53,14 @@ async function main() {
     atomic(filename, JSON.stringify(config, null, 2));
     result = {configured: true, repo: config.repo, state};
   } else if (args.command === "capture") {
-    const manifest = capture({...config, store});
+    let reported = 0;
+    let phase = "";
+    const manifest = capture({...config, store, onprogress: value => {
+      if (phase === value.phase && Date.now() - reported < 5000) return;
+      phase = value.phase;
+      reported = Date.now();
+      stdout.write(`${value.phase}: ${value.file}, ${(value.bytes / 1048576).toFixed(1)} MiB\n`);
+    }});
     result = {id: manifest.id, files: Object.keys(manifest.files).length, omitted: manifest.omitted};
   } else if (args.command === "pair") {
     if (!args.peer) throw new Error("--peer is required");

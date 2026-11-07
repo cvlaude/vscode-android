@@ -80,7 +80,10 @@ public class mainactivity extends Activity {
     protected void onResume() {
         super.onResume();
         fullscreen();
-        if (browser == null) return;
+        if (browser == null) {
+            if (pendingruntime != null) checkruntime(pendingruntime, false);
+            return;
+        }
         int generation = attempt;
         new Thread(() -> {
             if (healthy()) return;
@@ -325,7 +328,7 @@ public class mainactivity extends Activity {
             public void onReceivedError(WebView view, WebResourceRequest request, android.webkit.WebResourceError error) {
                 if (request.isForMainFrame()) runOnUiThread(() -> {
                     showconnection();
-                    status.setText("Runtime unavailable. Start it in Termux and reconnect.");
+                    if (pendingruntime != null) checkruntime(pendingruntime, false);
                 });
             }
         });
