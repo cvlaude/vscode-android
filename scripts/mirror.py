@@ -49,7 +49,7 @@ def cycle(home, repositories, chats, priority):
     pending = active if active in names[1:] and not ready(completion[active]) else next((name for name in names if not ready(completion[name])), None)
     for folder in folders:
         name = folder["id"]
-        paused = name in names[1:] and name != pending and not ready(completion[name])
+        paused = (name == "codexchats" and pending in names[1:]) or (name in names[1:] and name != pending and not ready(completion[name]))
         if folder["paused"] != paused:
             request(home, "/rest/config/folders/" + urllib.parse.quote(name, safe=""), {"paused": paused}, "PATCH")
     receipt = {"updated": time.time(), "phase": pending or "ready", "completion": completion}

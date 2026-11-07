@@ -14,6 +14,8 @@ The PC watcher starts at Windows sign-in, refreshes recent chats and code links,
 
 Background commands use hidden Windows jobs with bounded execution and descendant cleanup. Known code links and recent chat selection refresh every minute. New code files are discovered when the Git index changes or every ten minutes; the full project mirror watches files directly. Project markers live at `.claude/.stfolder`, excluded from transfers and working copies. Existing configurations can move their markers with `python runtime/markers.py --config PATH_TO_CONFIG_XML`. The helper pauses one folder at a time and preserves its marker contents. See [Syncthing's marker setting](https://docs.syncthing.net/users/config.html#config-option-folder.markername).
 
+After the initial chat transfer, chat rescans pause while a full project is seeding, then resume between project phases. This keeps growing chat logs from repeatedly occupying the only source scanner. Transfer phases wait for the source scan to finish; a temporary 100% result during a scan does not complete the phase.
+
 LAN transfers are unlimited. The phone's internet transfer limit is 5 KB/s, with compression and resumable blocks. Files already received remain on the phone when the PC loses power. Phone synchronization runs while Workspace is open or backgrounded and stops when Workspace closes.
 
 ## Snapshot handoffs on Windows

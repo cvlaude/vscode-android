@@ -16,7 +16,11 @@ class transfers(unittest.TestCase):
             home = pathlib.Path(directory)
             (home / "progress.json").write_text(json.dumps({"phase": "example-game"}))
             folders = [{"id": name, "paused": False, "devices": [{"deviceID": "pc"}, {"deviceID": "phone"}]} for name in ["codexchats", "example-site", "example-pages", "example-game", "example-portal", "example-engine"]]
+            updates = []
             def request(home, route, value=None, method=None):
+                if method == "PATCH":
+                    updates.append((route, value))
+                    return
                 if route == "/rest/config":
                     return {"folders": folders}
                 if route == "/rest/system/status":
@@ -30,6 +34,7 @@ class transfers(unittest.TestCase):
                 receipt = cycle(home, home, home, home)
             self.assertEqual(receipt["phase"], "example-game")
             self.assertEqual(receipt["completion"]["example-game"]["sourceState"], "scanning")
+            self.assertEqual(updates, [("/rest/config/folders/codexchats", {"paused": True})])
 
 ##########################################################################
 

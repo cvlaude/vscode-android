@@ -12,7 +12,7 @@ export function git(repo, args, input, optional = false) {
     timeout: 180000, env: {...process.env, GIT_OPTIONAL_LOCKS: "0"}
   });
   if (result.error) throw result.error;
-  if (result.status !== 0 && !optional) throw new Error(result.stderr.toString().trim() || `Git failed: ${args[0]}`);
+  if (result.status !== 0 && !optional) throw new Error(result.stderr.toString().trim() || (args[0] === "fsck" ? result.stdout.toString().trim().slice(0, 4096) : "") || `Git failed: ${args[0]}`);
   return result.status === 0 ? result.stdout : null;
 }
 
