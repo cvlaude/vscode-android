@@ -80,7 +80,7 @@ export function capture(options) {
   }
 }
 
-function capturefiles({repo, store, sessions = [], codexhome, profile, name: projectname}) {
+function capturefiles({repo, store, sessions = [], codexhome, profile, name: projectname, activecopy}) {
   repo = fs.realpathSync(repo);
   const gitdir = git(repo, ["rev-parse", "--absolute-git-dir"]).toString().trim();
   for (const lock of ["index.lock", "HEAD.lock", "ghdesktop/queue.json.lock"]) {
@@ -117,7 +117,14 @@ function capturefiles({repo, store, sessions = [], codexhome, profile, name: pro
   if ([...objectids].some(value => !/^[a-f0-9]{40,64}$/.test(value))) throw new Error("Invalid Git object in queue");
   const objectidentity = digest([...objectids].sort().join("\n"));
   let previous;
+  let transplanted = false;
   try {previous = JSON.parse(fs.readFileSync(path.join(store, "published.json")))} catch {}
+  if (previous?.source !== repo && activecopy && path.resolve(activecopy, "repo") === repo) {
+    const receipt = JSON.parse(fs.readFileSync(path.join(activecopy, "receipt.json"), "utf8"));
+    if (!/^[a-f0-9-]{36}$/.test(receipt.snapshot)) throw new Error("Invalid working-copy receipt");
+    previous = {...validate(JSON.parse(fs.readFileSync(path.join(store, "snapshots", `${receipt.snapshot}.json`), "utf8"))), source: repo};
+    transplanted = true;
+  }
   if (objectids.size) packobjects(repo, store, [...objectids], previous, files);
   files["git/HEAD"] = chunkfile(store, Buffer.from(head));
   files["git/refs"] = chunkfile(store, Buffer.from(refs));
@@ -137,7 +144,7 @@ function capturefiles({repo, store, sessions = [], codexhome, profile, name: pro
   if (refs !== git(repo, ["for-each-ref", "--format=%(objectname) %(refname)"]).toString() || head !== fs.readFileSync(path.join(gitdir, "HEAD"), "utf8") || (fs.existsSync(queuepath) && !queuebytes.equals(fs.readFileSync(queuepath)))) throw new Error("Repository changed during capture; retry");
   const currentindex = fs.existsSync(indexpath) ? fs.readFileSync(indexpath) : null;
   if (indexbytes ? !currentindex || !indexbytes.equals(currentindex) : currentindex) throw new Error("Git index changed during capture; retry");
-  if (previous?.source === repo && JSON.stringify(previous.files) === JSON.stringify(files) && JSON.stringify(previous.omitted) === JSON.stringify(omitted)) return previous;
+  if (!transplanted && previous?.source === repo && JSON.stringify(previous.files) === JSON.stringify(files) && JSON.stringify(previous.omitted) === JSON.stringify(omitted)) return previous;
   const manifest = {version: 1, id: crypto.randomUUID(), created: new Date().toISOString(), name: projectname || path.basename(repo), source: repo, objectidentity, objects: [...objectids], files, omitted};
   validate(manifest);
   atomic(path.join(store, "snapshots", `${manifest.id}.json`), JSON.stringify(manifest));

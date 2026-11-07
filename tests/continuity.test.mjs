@@ -73,6 +73,33 @@ test("three-way return retains local conflicts, applies edits and preserves dele
   assert.equal(fs.readFileSync(path.join(recovery, incoming.id, "deleted", "unicode.txt"), "utf8"), "Україна\n");
 });
 
+test("new commits reuse seeded Git packs and restore complete history", () => {
+  const source = fixture("history");
+  atomic(path.join(source.repo, "seed.bin"), crypto.randomBytes(512 * 1024));
+  git(source.repo, ["add", "."]);
+  git(source.repo, ["-c", "user.name=workspace test", "-c", "user.email=test@example.invalid", "commit", "-m", "seed"]);
+  const first = capture(source);
+  const packs = Object.keys(first.files).filter(name => name.startsWith("git/packs/"));
+  assert.equal(packs.length, 1);
+  atomic(path.join(source.repo, "index.html"), "<h1>next commit</h1>\n");
+  git(source.repo, ["add", "index.html"]);
+  git(source.repo, ["-c", "user.name=workspace test", "-c", "user.email=test@example.invalid", "commit", "-m", "next"]);
+  const second = capture(source);
+  assert.deepEqual(second.files[packs[0]], first.files[packs[0]]);
+  const added = Object.keys(second.files).filter(name => name.startsWith("git/packs/") && !first.files[name]);
+  assert.equal(added.length, 1);
+  assert.ok(second.files[added[0]].size < 16384);
+  const restored = restore({...source, manifest: second, destination: path.join(source.folder, "restored")});
+  git(restored.repo, ["fsck", "--full"]);
+  assert.equal(git(restored.repo, ["rev-list", "--count", "HEAD"]).toString().trim(), "2");
+  assert.equal(git(restored.repo, ["show", "HEAD:index.html"]).toString(), "<h1>next commit</h1>\n");
+  const phone = capture({...source, repo: restored.repo, activecopy: path.join(source.folder, "restored")});
+  for (const name of Object.keys(second.files).filter(name => name.startsWith("git/packs/"))) assert.deepEqual(phone.files[name], second.files[name]);
+  assert.equal(Object.keys(phone.files).filter(name => name.startsWith("git/packs/")).length, 2);
+  assert.equal(phone.source, restored.repo);
+  assert.notEqual(phone.id, second.id);
+});
+
 test("namespace traversal, ADS, Windows aliases and case collisions are rejected", () => {
   for (const name of ["../outside", "/absolute", "a/../b", "a\\b", "a:b", "nul.txt", "a.", "a /b"]) assert.throws(() => contained(session, name));
   const source = fixture("validation");
