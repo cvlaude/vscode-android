@@ -10,7 +10,7 @@ function database(store) {
   if (!databases.has(store)) {
     fs.mkdirSync(store, {recursive: true, mode: 0o700});
     const connection = new databasesync(path.join(store, "chunks.sqlite"));
-    connection.exec("PRAGMA busy_timeout=30000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS chunks (hash TEXT PRIMARY KEY, data BLOB NOT NULL) WITHOUT ROWID");
+    connection.exec("PRAGMA busy_timeout=30000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA cache_size=-32768; CREATE TABLE IF NOT EXISTS chunks (hash TEXT PRIMARY KEY, data BLOB NOT NULL) WITHOUT ROWID");
     databases.set(store, {connection, insert: connection.prepare("INSERT INTO chunks VALUES (?, ?) ON CONFLICT(hash) DO UPDATE SET data = excluded.data"), select: connection.prepare("SELECT data FROM chunks WHERE hash = ?"), batch: false, pending: 0});
   }
   return databases.get(store);
@@ -124,7 +124,7 @@ export function hashpath(filename) {
   return hash.digest("hex");
 }
 
-export function chunkpath(store, filename) {
+export function chunkpath(store, filename, onprogress) {
   const descriptor = fs.openSync(filename, "r");
   const hash = crypto.createHash("sha256");
   const chunks = [];
@@ -137,6 +137,7 @@ export function chunkpath(store, filename) {
       hash.update(value);
       chunks.push(putchunk(store, value));
       size += count;
+      if (onprogress && size % 1048576 < 16384) onprogress(size);
     }
   } finally {fs.closeSync(descriptor)}
   return {hash: hash.digest("hex"), size, chunks};

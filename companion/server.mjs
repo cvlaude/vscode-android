@@ -8,11 +8,13 @@ import {capture, restore} from "./snapshot.mjs";
 import {authorize, packetkey, pull, importhandoff, importauth, exporthandoff} from "./transfer.mjs";
 import zlib from "node:zlib";
 import {background} from "./worker.mjs";
+import {mirrorstatus, upgradephone} from "./mirrors.mjs";
 import {execFile as execfile} from "node:child_process";
 import {promisify} from "node:util";
 
 const webroot = fileurl(new URL("../shell/", import.meta.url));
 const types = {".html": "text/html", ".css": "text/css", ".js": "text/javascript", ".svg": "image/svg+xml"};
+const routes = {"/": "index.html", "/shell.css": "shell.css", "/shell.js": "shell.js", "/mirrors.js": "mirrors.js", "/touch.js": "touch.js", "/touch.css": "touch.css", "/icons.svg": "icons.svg"};
 
 /*//////////////////////////////////////////////////////////////////////*/
 
@@ -38,13 +40,19 @@ function loopback(request) {
 
 export function createserver({config, state, store, filename}, {port = 8765, lan = false} = {}) {
   const seen = new Map();
-  const localkey = crypto.randomBytes(32).toString("base64url");
+  const keyfile = path.join(state, "localaccess.key");
+  let localkey;
+  if (fs.existsSync(keyfile)) localkey = fs.readFileSync(keyfile, "utf8");
+  else {localkey = crypto.randomBytes(32).toString("base64url"); atomic(keyfile, localkey)}
+  if (!/^[a-zA-Z0-9_-]{43}$/.test(localkey)) throw new Error("Invalid local access key; preserve the file and reset the local connection");
   let operation = {active: false, message: "Ready", error: "", progress: null};
   let selected = "";
   let upstream = null;
   let upstreamcookie = "";
   let keysecret = "";
   let cachedkey;
+  const previewpaths = new Map();
+  let previewport;
   const manifests = new Map();
   const savedmanifest = id => {
     if (!/^[a-f0-9-]{36}$/.test(id)) throw new Error("Invalid snapshot identity");
@@ -147,6 +155,7 @@ export function createserver({config, state, store, filename}, {port = 8765, lan
           } catch {}
           return json(response, 200, {operation, snapshot, repo: config.repo, peer: config.peer, rate: config.rate, selected, platform: process.platform, workbench: config.workbench, paired: Boolean(config.peer)});
         }
+        if (request.method === "GET" && request.url === "/api/mirrors") return json(response, 200, await mirrorstatus(state));
         if (request.method !== "POST") return json(response, 405, {error: "POST required"});
         const value = JSON.parse((await body(request)).toString() || "{}");
         if (request.url === "/api/config") {
@@ -166,7 +175,15 @@ export function createserver({config, state, store, filename}, {port = 8765, lan
           atomic(filename, JSON.stringify(config, null, 2));
           return json(response, 200, {saved: true});
         }
-        if (request.url === "/api/capture") run(async () => {
+        if (request.url === "/api/mirroropen") run(async () => {
+          const result = await background("openmirror", {state, name: value.name, kind: value.kind});
+          const returned = result.filesonly ? {conflicts: []} : upgradephone({state, previous: config, destination: result});
+          Object.assign(config, result, {name: value.name});
+          selected = result.repo;
+          atomic(filename, JSON.stringify(config, null, 2));
+          return returned.conflicts.length ? `Working copy ready; ${returned.conflicts.length} conflicts retained` : "Working copy ready";
+        });
+        else if (request.url === "/api/capture") run(async () => {
           if (!config.repo) throw new Error("Set the repository with the companion configure command");
           const manifest = await background("capture", {...config, store});
           return `Saved ${Object.keys(manifest.files).length} files`;
@@ -184,6 +201,7 @@ export function createserver({config, state, store, filename}, {port = 8765, lan
           config.repo = result.repo;
           config.name = manifest.name;
           config.activecopy = destination;
+          config.filesonly = Boolean(result.filesonly);
           config.pendingsessions = Object.keys(manifest.files).filter(name => name.startsWith("codex/sessions/")).map(name => name.slice(6));
           atomic(filename, JSON.stringify(config, null, 2));
           return `Working copy ready: ${manifest.name}`;
@@ -220,9 +238,51 @@ export function createserver({config, state, store, filename}, {port = 8765, lan
         } else return json(response, 404, {error: "Unknown command"});
         return json(response, 202, {started: true});
       }
-      if (request.url.startsWith("/workbench/")) {
+      let workpath = request.url;
+      const routepath = new URL(request.url, "http://127.0.0.1").pathname;
+      if (!workpath.startsWith("/workbench/") && !routes[routepath] && authenticated(request) && ["GET", "HEAD"].includes(request.method)) {
+        let referer;
+        try {referer = new URL(request.headers.referer)} catch {}
+        if (referer?.host === request.headers.host) {
+          const port = referer.pathname.match(/^\/workbench\/proxy\/(\d+)\//)?.[1] || previewpaths.get(referer.pathname);
+          if (port) {
+            workpath = `/workbench/proxy/${port}${request.url}`;
+            previewpaths.set(routepath, port);
+            if (previewpaths.size > 4096) previewpaths.delete(previewpaths.keys().next().value);
+          }
+        }
+      }
+      if (workpath.startsWith("/workbench/")) {
         if (!authenticated(request) || !upstream) return json(response, 401, {error: "Open the workbench from the launcher"});
-        const proxy = http.request({hostname: upstream.hostname, port: upstream.port, method: request.method, path: request.url.slice(10) || "/", headers: {...request.headers, host: upstream.host, origin: upstream.origin, cookie: upstreamcookie}}, result => {
+        const rootpage = /^\/workbench\/(?:\?|$)/.test(workpath);
+        const portproxy = /^\/workbench\/proxy\/\d+\//.test(workpath);
+        if (portproxy) previewport = workpath.split("/")[3];
+        const headers = {...request.headers, host: portproxy ? request.headers.host : upstream.host, cookie: upstreamcookie};
+        if (request.headers.origin) headers.origin = portproxy ? request.headers.origin : upstream.origin;
+        if (rootpage) headers["accept-encoding"] = "identity";
+        const proxy = http.request({hostname: upstream.hostname, port: upstream.port, method: request.method, path: workpath.slice(10) || "/", headers}, result => {
+          if (rootpage && result.statusCode === 200 && result.headers["content-type"]?.includes("text/html")) {
+            const chunks = [];
+            let size = 0;
+            result.on("data", chunk => {
+              size += chunk.length;
+              if (size > 1048576) result.destroy(new Error("Workbench page exceeds 1 MiB"));
+              else chunks.push(chunk);
+            });
+            result.on("error", () => {if (!response.headersSent) json(response, 502, {error: "Workbench page unavailable"}); else response.end()});
+            result.on("end", () => {
+              let html = Buffer.concat(chunks).toString("utf8");
+              const nonce = html.match(/<script[^>]*\bnonce="([a-zA-Z0-9+/_=-]+)"/i)?.[1];
+              const controls = `<link rel="stylesheet" href="/touch.css"><script${nonce ? ` nonce="${nonce}"` : ""} src="/touch.js" defer></script>`;
+              html = html.replace("</head>", controls + "</head>");
+              const headers = {...result.headers};
+              delete headers["content-length"];
+              delete headers["content-encoding"];
+              response.writeHead(200, headers);
+              response.end(html);
+            });
+            return;
+          }
           response.writeHead(result.statusCode, result.headers);
           result.pipe(response);
         });
@@ -230,16 +290,19 @@ export function createserver({config, state, store, filename}, {port = 8765, lan
         request.pipe(proxy);
         return;
       }
-      const names = {"/": "index.html", "/shell.css": "shell.css", "/shell.js": "shell.js", "/icons.svg": "icons.svg"};
-      const name = names[request.url];
+      const name = routes[routepath];
       if (!name) return json(response, 404, {error: "Not found"});
       response.writeHead(200, {"content-type": types[path.extname(name)], "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'", "x-content-type-options": "nosniff", "cache-control": "no-cache"});
       fs.createReadStream(path.join(webroot, name)).pipe(response);
     } catch (error) {json(response, 400, {error: error.message})}
   });
   server.on("upgrade", (request, socket, head) => {
-    if (!request.url.startsWith("/workbench/") || !authenticated(request) || !upstream) {socket.destroy(); return}
-    const proxy = http.request({hostname: upstream.hostname, port: upstream.port, path: request.url.slice(10) || "/", headers: {...request.headers, host: upstream.host, origin: upstream.origin, cookie: upstreamcookie}});
+    let workpath = request.url;
+    if (previewport && /^\/___vscode_livepreview/.test(workpath)) workpath = `/workbench/proxy/${previewport}${workpath}`;
+    if (!workpath.startsWith("/workbench/") || !authenticated(request) || !upstream) {socket.destroy(); return}
+    const portproxy = /^\/workbench\/proxy\/\d+\//.test(workpath);
+    const headers = {...request.headers, host: portproxy ? request.headers.host : upstream.host, origin: portproxy ? request.headers.origin : upstream.origin, cookie: upstreamcookie};
+    const proxy = http.request({hostname: upstream.hostname, port: upstream.port, path: workpath.slice(10) || "/", headers});
     proxy.on("upgrade", (response, connection, buffer) => {
       socket.write(`HTTP/1.1 ${response.statusCode} Switching Protocols\r\n`);
       for (const [name, value] of Object.entries(response.headers)) socket.write(`${name}: ${value}\r\n`);

@@ -1,6 +1,7 @@
 import {Worker, isMainThread as mainthread, parentPort as parent, workerData as data} from "node:worker_threads";
 import {capture, restore} from "./snapshot.mjs";
 import {exporthandoff} from "./transfer.mjs";
+import {openmirror} from "./mirrors.mjs";
 
 export function background(task, options) {
   return new Promise((resolve, reject) => {
@@ -13,8 +14,8 @@ export function background(task, options) {
 
 if (!mainthread) {
   try {
-    const actions = {capture, restore, exporthandoff};
+    const actions = {capture, restore, exporthandoff, openmirror};
     if (!actions[data.task]) throw new Error("Unknown background operation");
-    parent.postMessage({result: actions[data.task](data.options)});
+    parent.postMessage({result: await actions[data.task](data.options)});
   } catch (error) {parent.postMessage({error: error.message})}
 }

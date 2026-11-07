@@ -7,6 +7,7 @@
     <title>Workspace - Android</title>
     <link rel="stylesheet" href="shell.css">
     <script src="shell.js" defer></script>
+    <script src="mirrors.js" defer></script>
   </head>
   <body>
     <header class="titlebar">
@@ -37,6 +38,12 @@
               <button class="primary openworkbench" data-action="open"><svg><use href="icons.svg#editor"></use></svg>Open editor</button>
               <button class="secondary" data-action="restore"><svg><use href="icons.svg#folder"></use></svg>Create working copy</button>
             </div>
+            <section class="mirrorspanel hidden">
+              <div class="sectionheading">PROJECTS</div>
+              <div class="mirrorrows"></div>
+              <div class="sectionheading">CODEX CHATS</div>
+              <p class="chatprogress">Waiting for PC</p>
+            </section>
             <div class="sectionheading">SNAPSHOT</div>
             <dl class="snapshotdetails">
               <div><dt>Saved</dt><dd class="savedtime">No snapshot yet</dd></div>

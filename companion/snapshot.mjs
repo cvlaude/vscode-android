@@ -20,16 +20,17 @@ function excluded(relative) {
   return relative.split("/").some(part => /^(node_modules|\.claude|\.gradle|\.env(?:\..*)?|auth\.json|credentials(?:\.json)?|id_rsa|id_ed25519)$/i.test(part)) || /\.(pem|p12|pfx|jks|keystore|key)$/i.test(relative);
 }
 
-function addfile(files, store, name, filename) {
+function addfile(files, store, name, filename, onprogress) {
   const before = fs.statSync(filename);
   if (before.size > 512 * 1024 * 1024) throw new Error(`File exceeds 512 MiB: ${name}`);
-  const value = chunkpath(store, filename);
+  onprogress?.({phase: "files", file: name, bytes: 0});
+  const value = chunkpath(store, filename, bytes => onprogress?.({phase: "files", file: name, bytes}));
   const after = fs.statSync(filename);
   if (before.size !== after.size || before.mtimeMs !== after.mtimeMs) throw new Error(`File changed during capture: ${name}`);
   files[name] = {...value, executable: Boolean(before.mode & 0o111)};
 }
 
-function packobjects(repo, store, objects, previous, files) {
+function packobjects(repo, store, objects, previous, files, onprogress) {
   let exclusions = [];
   if (previous?.source === repo && Array.isArray(previous.objects)) {
     const values = previous.objects;
@@ -41,6 +42,7 @@ function packobjects(repo, store, objects, previous, files) {
     }
   }
   const spool = path.join(store, "capture.pack");
+  onprogress?.({phase: "history", file: "Git object pack", bytes: 0});
   const descriptor = fs.openSync(spool, "w", 0o600);
   try {
     const result = spawn("git", ["-c", "core.hooksPath=", "pack-objects", "--stdout", "--revs"], {
@@ -52,7 +54,7 @@ function packobjects(repo, store, objects, previous, files) {
     fs.fsyncSync(descriptor);
   } finally {fs.closeSync(descriptor)}
   if (fs.statSync(spool).size > 8 * 1024 * 1024 * 1024) throw new Error("Git pack exceeds 8 GiB");
-  const entry = chunkpath(store, spool);
+  const entry = chunkpath(store, spool, bytes => onprogress?.({phase: "history", file: "Git object pack", bytes}));
   if (entry.size > 32 || !Object.keys(files).some(name => name === "git/objects.pack" || name.startsWith("git/packs/"))) files[`git/packs/${entry.hash}.pack`] = entry;
   fs.truncateSync(spool, 0);
 }
@@ -74,7 +76,7 @@ export function capture(options) {
     fs.writeFileSync(descriptor, JSON.stringify({pid: process.pid, started: Date.now()}));
     fs.fsyncSync(descriptor);
     beginchunks(options.store);
-    return capturefiles(options);
+    return options.filesonly ? captureplain(options) : capturefiles(options);
   } finally {
     try {endchunks(options.store)} finally {
       fs.closeSync(descriptor);
@@ -83,7 +85,30 @@ export function capture(options) {
   }
 }
 
-function capturefiles({repo, store, sessions = [], codexhome, profile, name: projectname, activecopy}) {
+export function captureplain({repo, store, name, onprogress}) {
+  const files = {};
+  const omitted = [];
+  const visit = (folder, prefix = "") => {
+    for (const entry of fs.readdirSync(folder, {withFileTypes: true})) {
+      const relative = prefix + entry.name;
+      if (entry.name === ".git" || excluded(relative)) {omitted.push(relative); continue}
+      const filename = contained(repo, relative);
+      if (entry.isDirectory()) visit(filename, relative + "/");
+      else if (entry.isFile()) addfile(files, store, `repo/${relative}`, filename, onprogress);
+      else throw new Error("Linked files cannot be captured");
+    }
+  };
+  visit(repo);
+  const manifest = {version: 1, id: crypto.randomUUID(), created: new Date().toISOString(), name: name || path.basename(repo), source: repo, filesonly: true, files, omitted};
+  validate(manifest);
+  endchunks(store);
+  atomic(path.join(store, "snapshots", `${manifest.id}.json`), JSON.stringify(manifest));
+  atomic(path.join(store, "latest.json"), JSON.stringify(manifest));
+  atomic(path.join(store, "published.json"), JSON.stringify(manifest));
+  return manifest;
+}
+
+function capturefiles({repo, store, sessions = [], codexhome, profile, name: projectname, activecopy, onprogress}) {
   repo = fs.realpathSync(repo);
   const gitdir = git(repo, ["rev-parse", "--absolute-git-dir"]).toString().trim();
   for (const lock of ["index.lock", "HEAD.lock", "ghdesktop/queue.json.lock"]) {
@@ -104,7 +129,7 @@ function capturefiles({repo, store, sessions = [], codexhome, profile, name: pro
     const filename = contained(repo, name);
     if (!fs.existsSync(filename)) continue;
     if (!fs.statSync(filename).isFile()) {omitted.push(name); continue}
-    addfile(files, store, `repo/${name}`, filename);
+    addfile(files, store, `repo/${name}`, filename, onprogress);
   }
   const objectids = new Set(refs.trim().split("\n").filter(Boolean).map(line => line.split(" ")[0]));
   const currenthead = git(repo, ["rev-parse", "--verify", "HEAD"], undefined, true)?.toString().trim();
@@ -128,7 +153,7 @@ function capturefiles({repo, store, sessions = [], codexhome, profile, name: pro
     previous = {...validate(JSON.parse(fs.readFileSync(path.join(store, "snapshots", `${receipt.snapshot}.json`), "utf8"))), source: repo};
     transplanted = true;
   }
-  if (objectids.size) packobjects(repo, store, [...objectids], previous, files);
+  if (objectids.size) packobjects(repo, store, [...objectids], previous, files, onprogress);
   files["git/HEAD"] = chunkfile(store, Buffer.from(head));
   files["git/refs"] = chunkfile(store, Buffer.from(refs));
   files["git/ghdesktop/queue.json"] = chunkfile(store, queuebytes);
@@ -136,12 +161,12 @@ function capturefiles({repo, store, sessions = [], codexhome, profile, name: pro
   if (codexhome) {
     for (const relative of sessions) {
       if (!relative.startsWith("sessions/") || !relative.endsWith(".jsonl")) throw new Error("Select individual Codex session JSONL files");
-      addfile(files, store, `codex/${relative}`, contained(codexhome, relative));
+      addfile(files, store, `codex/${relative}`, contained(codexhome, relative), onprogress);
     }
   }
   if (profile) {
     for (const name of ["settings.json", "keybindings.json", "extensions.json"]) {
-      if (fs.existsSync(path.join(profile, name))) addfile(files, store, `profile/${name}`, path.join(profile, name));
+      if (fs.existsSync(path.join(profile, name))) addfile(files, store, `profile/${name}`, path.join(profile, name), onprogress);
     }
   }
   if (refs !== git(repo, ["for-each-ref", "--format=%(objectname) %(refname)"]).toString() || head !== fs.readFileSync(path.join(gitdir, "HEAD"), "utf8") || (fs.existsSync(queuepath) && !queuebytes.equals(fs.readFileSync(queuepath)))) throw new Error("Repository changed during capture; retry");
@@ -201,6 +226,10 @@ export function restore({manifest, store, destination}) {
   }
   const repo = path.join(destination, "repo");
   fs.mkdirSync(repo, {recursive: true});
+  if (manifest.filesonly) {
+    atomic(path.join(destination, "receipt.json"), JSON.stringify({snapshot: manifest.id, restored: new Date().toISOString(), files: Object.keys(manifest.files).length}));
+    return {repo, filesonly: true};
+  }
   git(repo, ["init", "-b", "main"]);
   const metadata = path.join(destination, "git");
   for (const name of Object.keys(manifest.files).filter(name => name === "git/objects.pack" || name.startsWith("git/packs/"))) {

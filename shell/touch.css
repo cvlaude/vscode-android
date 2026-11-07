@@ -1,0 +1,2 @@
+.monaco-sash, .tabs-container .tab, .pane-header[draggable="true"] {touch-action: none}
+.workspacedrag {pointer-events: none !important}
