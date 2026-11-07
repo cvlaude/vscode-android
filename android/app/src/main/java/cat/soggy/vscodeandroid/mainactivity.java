@@ -47,11 +47,14 @@ public class mainactivity extends Activity {
     private String download;
     private String pendingruntime;
     private volatile int attempt;
+    private int scale = 60;
+    private TextView scalelabel;
     private final int foreground = Color.rgb(204, 204, 204);
 
     @Override
     public void onCreate(Bundle saved) {
         super.onCreate(saved);
+        scale = Math.max(40, Math.min(100, getPreferences(MODE_PRIVATE).getInt("scale", 60)));
         getWindow().setStatusBarColor(Color.rgb(24, 24, 24));
         getWindow().setNavigationBarColor(Color.rgb(24, 24, 24));
         if (android.os.Build.VERSION.SDK_INT >= 30) {
@@ -221,7 +224,7 @@ public class mainactivity extends Activity {
             intent.putExtra("com.termux.RUN_COMMAND_WORKDIR", "/data/data/com.termux/files/home");
             intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", true);
             intent.putExtra("com.termux.RUN_COMMAND_COMMAND_LABEL", "Workspace");
-            startService(intent);
+            startForegroundService(intent);
             checkruntime(value, true);
         } catch (Exception error) {
             android.util.Log.e("Workspace", "Runtime startup failed", error);
@@ -239,7 +242,7 @@ public class mainactivity extends Activity {
 
     private void showworkspace(String value) {
         origin = "http://127.0.0.1:8765";
-        browser = new WebView(this);
+        browser = new workview(this);
         if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) WebView.setWebContentsDebuggingEnabled(true);
         browser.setBackgroundColor(Color.rgb(31, 31, 31));
         WebSettings settings = browser.getSettings();
@@ -249,9 +252,16 @@ public class mainactivity extends Activity {
         settings.setAllowContentAccess(true);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setSupportZoom(false);
+        settings.setUseWideViewPort(true);
+        settings.setLoadWithOverviewMode(true);
         settings.setMediaPlaybackRequiresUserGesture(true);
         settings.setSafeBrowsingEnabled(true);
         browser.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                if (url.startsWith(origin + "/workbench/")) applyscale();
+            }
+
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri target = request.getUrl();
@@ -292,8 +302,63 @@ public class mainactivity extends Activity {
             intent.putExtra(Intent.EXTRA_TITLE, "workspace.handoff");
             startActivityForResult(intent, 13);
         });
-        showview(browser);
+        LinearLayout workspace = new LinearLayout(this);
+        workspace.setOrientation(LinearLayout.HORIZONTAL);
+        workspace.addView(browser, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1));
+        LinearLayout controls = new LinearLayout(this);
+        controls.setOrientation(LinearLayout.VERTICAL);
+        android.widget.ImageButton menu = new android.widget.ImageButton(this);
+        menu.setImageResource(R.drawable.workspacecontrols);
+        menu.setBackgroundColor(Color.rgb(24, 24, 24));
+        menu.setContentDescription("Workspace controls");
+        menu.setPadding(pixels(8), pixels(8), pixels(8), pixels(8));
+        menu.setOnClickListener(view -> displaymenu(menu));
+        controls.addView(menu, new LinearLayout.LayoutParams(pixels(40), pixels(40)));
+        scalelabel = label(scale + "%", 10);
+        scalelabel.setGravity(android.view.Gravity.CENTER);
+        scalelabel.setOnClickListener(view -> displaymenu(menu));
+        controls.addView(scalelabel);
+        workspace.addView(controls, new LinearLayout.LayoutParams(pixels(40), ViewGroup.LayoutParams.MATCH_PARENT));
+        showview(workspace);
         browser.loadUrl(Uri.parse(value).buildUpon().appendQueryParameter("editor", "1").build().toString());
+    }
+
+    private void applyscale() {
+        if (browser == null) return;
+        double factor = scale / 100.0;
+        String script = "(()=>{const viewport=document.querySelector('meta[name=viewport]');if(viewport)viewport.content='width=device-width,initial-scale=" + factor + ",minimum-scale=" + factor + ",maximum-scale=" + factor + ",user-scalable=no';})()";
+        browser.evaluateJavascript(script, null);
+        if (scalelabel != null) scalelabel.setText(scale + "%");
+    }
+
+    private void displaymenu(View anchor) {
+        android.widget.PopupMenu menu = new android.widget.PopupMenu(this, anchor);
+        for (int value : new int[]{40, 50, 60, 70, 80, 90, 100}) menu.getMenu().add(0, value, value, "Interface scale: " + value + "%");
+        menu.getMenu().add(0, 201, 201, "Show keyboard");
+        menu.getMenu().add(0, 202, 202, "Hide keyboard");
+        menu.getMenu().add(0, 203, 203, "Hide system bars");
+        menu.getMenu().add(0, 204, 204, "Show system bars");
+        menu.getMenu().add(0, 205, 205, "Connection");
+        menu.setOnMenuItemClickListener(item -> {
+            int action = item.getItemId();
+            if (action <= 100) {
+                scale = action;
+                getPreferences(MODE_PRIVATE).edit().putInt("scale", scale).apply();
+                applyscale();
+            } else if (action == 201 || action == 202) {
+                android.view.inputmethod.InputMethodManager keyboard = (android.view.inputmethod.InputMethodManager)getSystemService(INPUT_METHOD_SERVICE);
+                if (action == 201) {browser.requestFocus(); keyboard.showSoftInput(browser, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);}
+                else keyboard.hideSoftInputFromWindow(browser.getWindowToken(), 0);
+            } else if (action == 203 || action == 204) {
+                if (android.os.Build.VERSION.SDK_INT >= 30 && getWindow().getInsetsController() != null) {
+                    getWindow().getInsetsController().setSystemBarsBehavior(android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                    if (action == 203) getWindow().getInsetsController().hide(android.view.WindowInsets.Type.systemBars());
+                    else getWindow().getInsetsController().show(android.view.WindowInsets.Type.systemBars());
+                }
+            } else if (action == 205) showconnection();
+            return true;
+        });
+        menu.show();
     }
 
     /*//////////////////////////////////////////////////////////////////////*/

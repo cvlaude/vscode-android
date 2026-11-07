@@ -225,6 +225,9 @@ input,select {
   width: 100%; max-width: 500px;
 }
 .hidden {display: none}
+.downloadlink {
+  color: #4daafc; padding: 9px 4px;
+}
 @media (max-width: 1050px) {
   .layout {grid-template-columns: 155px minmax(280px,1fr) 220px}
   .editorcontent {padding: 24px}

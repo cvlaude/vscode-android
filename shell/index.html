@@ -23,6 +23,7 @@
         <button class="treerow active" data-action="home"><svg><use href="icons.svg#folder"></use></svg>Workspace</button>
         <button class="treerow" data-action="capture"><svg><use href="icons.svg#save"></use></svg>Save snapshot</button>
         <button class="treerow" data-action="pull"><svg><use href="icons.svg#sync"></use></svg>Receive changes</button>
+        <button class="treerow" data-action="import"><svg><use href="icons.svg#folder"></use></svg>Import handoff</button>
         <button class="treerow" data-action="settings"><svg><use href="icons.svg#settings"></use></svg>Connection</button>
         <div class="sidefooter"><svg><use href="icons.svg#device"></use></svg><span class="devicename">Local device</span></div>
       </aside>
@@ -50,6 +51,9 @@
             <div class="actions">
               <button class="secondary" data-action="capture"><svg><use href="icons.svg#save"></use></svg>Save snapshot</button>
               <button class="secondary" data-action="pull"><svg><use href="icons.svg#sync"></use></svg>Receive changes</button>
+              <button class="secondary" data-action="import">Import handoff</button>
+              <button class="secondary" data-action="export">Export handoff</button>
+              <a class="downloadlink hidden" href="/api/download" download="workspace.handoff">Save handoff file</a>
             </div>
           </section>
           <form class="settingspage hidden">
@@ -57,6 +61,8 @@
             <label>Other device address<input class="peerinput" type="url" placeholder="http://192.168.1.4:8765" autocomplete="off"></label>
             <label>Pairing secret<input class="secretinput" type="password" minlength="16" placeholder="Keep existing secret" autocomplete="off"></label>
             <label>Transfer limit<select class="rateinput"><option value="5120">5 KB/s</option><option value="20480">20 KB/s</option><option value="102400">100 KB/s</option><option value="0">Unlimited</option></select></label>
+            <button class="secondary" type="button" data-action="authimport">Import Codex credentials</button>
+            <button class="secondary" type="button" data-action="sessionsimport">Import selected sessions</button>
             <div class="actions"><button class="primary" type="submit">Save</button><button class="secondary" type="button" data-action="home">Cancel</button></div>
           </form>
         </div>
@@ -68,12 +74,13 @@
           <p class="localpath">Select a repository in the companion.</p>
           <div class="agentstate"><span class="dot"></span><span>Runtime on this device</span></div>
           <div class="sectionheading">WORKBENCH</div>
-          <button class="linkbutton" data-action="open">Open Codex in editor<svg><use href="icons.svg#forward"></use></svg></button>
-          <button class="linkbutton" data-action="open">Open Desktop SCM<svg><use href="icons.svg#forward"></use></svg></button>
+          <button class="linkbutton" data-action="open" data-view="codex">Open Codex in editor<svg><use href="icons.svg#forward"></use></svg></button>
+          <button class="linkbutton" data-action="open" data-view="scm">Open Desktop SCM<svg><use href="icons.svg#forward"></use></svg></button>
         </div>
         <div class="agentfooter"><svg><use href="icons.svg#lock"></use></svg>Workspace permissions</div>
       </aside>
     </main>
+    <input class="fileinput hidden" type="file" accept=".handoff,application/octet-stream">
     <footer class="statusbar"><span><svg><use href="icons.svg#device"></use></svg><span class="connectionlabel">Local</span></span><span class="statusmessage" aria-live="polite">Ready</span><button data-action="settings"><svg><use href="icons.svg#sync"></use></svg><span class="ratelabel">5 KB/s</span></button></footer>
   </body>
 </html>
