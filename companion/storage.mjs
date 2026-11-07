@@ -11,7 +11,7 @@ function database(store) {
     fs.mkdirSync(store, {recursive: true, mode: 0o700});
     const connection = new databasesync(path.join(store, "chunks.sqlite"));
     connection.exec("PRAGMA busy_timeout=30000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS chunks (hash TEXT PRIMARY KEY, data BLOB NOT NULL) WITHOUT ROWID");
-    databases.set(store, {connection, insert: connection.prepare("INSERT OR IGNORE INTO chunks VALUES (?, ?)"), select: connection.prepare("SELECT data FROM chunks WHERE hash = ?"), batch: false, pending: 0});
+    databases.set(store, {connection, insert: connection.prepare("INSERT INTO chunks VALUES (?, ?) ON CONFLICT(hash) DO UPDATE SET data = excluded.data"), select: connection.prepare("SELECT data FROM chunks WHERE hash = ?"), batch: false, pending: 0});
   }
   return databases.get(store);
 }
@@ -77,15 +77,22 @@ export function contained(root, relative) {
 export function putchunk(store, value) {
   const hash = digest(value);
   const target = path.join(store, "chunks", hash);
-  if (!fs.existsSync(target)) {
-    const state = database(store);
-    if (!state.select.get(hash)) {
-      state.insert.run(hash, zlib.gzipSync(value, {level: 6}));
-      if (state.batch && ++state.pending >= 128) {
-        state.connection.exec("COMMIT; BEGIN IMMEDIATE");
-        state.pending = 0;
-      }
-    }
+  const legacy = fs.existsSync(target);
+  const state = database(store);
+  const packet = legacy ? fs.readFileSync(target) : state.select.get(hash)?.data;
+  if (packet) {
+    try {
+      const previous = zlib.gunzipSync(packet, {maxOutputLength: 16384});
+      if (digest(previous) === hash) return hash;
+    } catch {}
+    const recovery = path.join(store, "recovery", `${hash}.${crypto.randomBytes(6).toString("hex")}.damaged`);
+    atomic(recovery, packet);
+    if (legacy) fs.renameSync(target, `${recovery}.legacy`);
+  }
+  state.insert.run(hash, zlib.gzipSync(value, {level: 6}));
+  if (state.batch && ++state.pending >= 128) {
+    state.connection.exec("COMMIT; BEGIN IMMEDIATE");
+    state.pending = 0;
   }
   return hash;
 }

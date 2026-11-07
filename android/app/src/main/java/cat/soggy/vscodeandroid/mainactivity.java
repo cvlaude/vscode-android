@@ -18,13 +18,18 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.webkit.CookieManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.FrameLayout;
+import android.widget.ScrollView;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
 import java.util.Arrays;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
@@ -39,6 +44,9 @@ public class mainactivity extends Activity {
     private LinearLayout page;
     private ValueCallback<Uri[]> picker;
     private String origin = "http://127.0.0.1:8765";
+    private String download;
+    private String pendingruntime;
+    private volatile int attempt;
     private final int foreground = Color.rgb(204, 204, 204);
 
     @Override
@@ -46,11 +54,32 @@ public class mainactivity extends Activity {
         super.onCreate(saved);
         getWindow().setStatusBarColor(Color.rgb(24, 24, 24));
         getWindow().setNavigationBarColor(Color.rgb(24, 24, 24));
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            getWindow().setDecorFitsSystemWindows(false);
+            getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING);
+        }
         showconnection();
+        String previous = address.getText().toString();
+        if (Uri.parse(previous).getFragment() != null && Uri.parse(previous).getFragment().matches("[a-zA-Z0-9_-]{43}")) connect();
     }
 
     private int pixels(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (browser == null) return;
+        int generation = attempt;
+        new Thread(() -> {
+            if (healthy()) return;
+            runOnUiThread(() -> {
+                if (generation != attempt || browser == null || isDestroyed()) return;
+                showconnection();
+                connect();
+            });
+        }, "workspaceresume").start();
     }
 
     private TextView label(String value, int size) {
@@ -76,7 +105,24 @@ public class mainactivity extends Activity {
         return button;
     }
 
+    private void showview(View content) {
+        FrameLayout frame = new FrameLayout(this);
+        frame.setBackgroundColor(Color.rgb(24, 24, 24));
+        frame.addView(content, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        frame.setOnApplyWindowInsetsListener((view, insets) -> {
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                android.graphics.Insets bars = insets.getInsets(android.view.WindowInsets.Type.systemBars() | android.view.WindowInsets.Type.displayCutout());
+                android.graphics.Insets keyboard = insets.getInsets(android.view.WindowInsets.Type.ime());
+                view.setPadding(bars.left, bars.top, bars.right, Math.max(bars.bottom, keyboard.bottom));
+            }
+            return insets;
+        });
+        setContentView(frame);
+        frame.requestApplyInsets();
+    }
+
     private void showconnection() {
+        attempt++;
         if (browser != null) {browser.destroy(); browser = null;}
         page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
@@ -101,7 +147,10 @@ public class mainactivity extends Activity {
         page.addView(connect, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, pixels(44)));
         status = label("Start the runtime in Termux before connecting.", 13);
         page.addView(status);
-        setContentView(page);
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.addView(page);
+        showview(scroll);
     }
 
     private void connect() {
@@ -113,8 +162,85 @@ public class mainactivity extends Activity {
         }
         try {getPreferences(MODE_PRIVATE).edit().putString("connection", seal(value)).apply();}
         catch (Exception error) {status.setText("Could not save the connection.");}
+        pendingruntime = value;
+        checkruntime(value, false);
+    }
+
+    private boolean healthy() {
+        HttpURLConnection connection = null;
+        try {
+            connection = (HttpURLConnection)new URL("http://127.0.0.1:8765/health").openConnection();
+            connection.setConnectTimeout(700);
+            connection.setReadTimeout(700);
+            connection.setInstanceFollowRedirects(false);
+            if (connection.getResponseCode() != 200) return false;
+            try (java.io.InputStream input = connection.getInputStream()) {
+                java.io.ByteArrayOutputStream data = new java.io.ByteArrayOutputStream();
+                byte[] buffer = new byte[256];
+                int count;
+                while ((count = input.read(buffer)) > 0 && data.size() < 1024) data.write(buffer, 0, count);
+                return "vscode-android".equals(new org.json.JSONObject(data.toString("UTF-8")).optString("application"));
+            }
+        } catch (Exception error) {return false;}
+        finally {if (connection != null) connection.disconnect();}
+    }
+
+    private void checkruntime(String value, boolean started) {
+        int generation = ++attempt;
+        status.setText(started ? "Starting runtime..." : "Connecting...");
+        new Thread(() -> {
+            for (int retry = 0; retry < (started ? 45 : 1); retry++) {
+                if (generation != attempt || isDestroyed()) return;
+                if (healthy()) {
+                    runOnUiThread(() -> {if (generation == attempt && !isDestroyed()) showworkspace(value);});
+                    return;
+                }
+                if (!started) {
+                    runOnUiThread(() -> {if (generation == attempt && !isDestroyed()) startruntime(value);});
+                    return;
+                }
+                try {Thread.sleep(700);} catch (InterruptedException error) {return;}
+            }
+            runOnUiThread(() -> {
+                if (generation == attempt && !isDestroyed()) status.setText("Runtime did not start. Check Termux external-command permission or run ~/.local/bin/workspace in Termux.");
+            });
+        }, "workspacestart").start();
+    }
+
+    private void startruntime(String value) {
+        if (checkSelfPermission("com.termux.permission.RUN_COMMAND") != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            pendingruntime = value;
+            status.setText("Allow Workspace to start the Termux runtime.");
+            requestPermissions(new String[]{"com.termux.permission.RUN_COMMAND"}, 71);
+            return;
+        }
+        try {
+            Intent intent = new Intent("com.termux.RUN_COMMAND");
+            intent.setClassName("com.termux", "com.termux.app.RunCommandService");
+            intent.putExtra("com.termux.RUN_COMMAND_PATH", "/data/data/com.termux/files/home/.local/bin/workspace");
+            intent.putExtra("com.termux.RUN_COMMAND_WORKDIR", "/data/data/com.termux/files/home");
+            intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", true);
+            intent.putExtra("com.termux.RUN_COMMAND_COMMAND_LABEL", "Workspace");
+            startService(intent);
+            checkruntime(value, true);
+        } catch (Exception error) {
+            android.util.Log.e("Workspace", "Runtime startup failed", error);
+            status.setText("Could not start Termux: " + error.getMessage());
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int request, String[] permissions, int[] grants) {
+        super.onRequestPermissionsResult(request, permissions, grants);
+        if (request != 71) return;
+        if (grants.length > 0 && grants[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) startruntime(pendingruntime);
+        else status.setText("Allow command access in Android app settings, or start the runtime in Termux.");
+    }
+
+    private void showworkspace(String value) {
         origin = "http://127.0.0.1:8765";
         browser = new WebView(this);
+        if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) WebView.setWebContentsDebuggingEnabled(true);
         browser.setBackgroundColor(Color.rgb(31, 31, 31));
         WebSettings settings = browser.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -157,8 +283,17 @@ public class mainactivity extends Activity {
                 return true;
             }
         });
-        setContentView(browser);
-        browser.loadUrl(value);
+        browser.setDownloadListener((urlvalue, agent, disposition, type, length) -> {
+            if (!urlvalue.startsWith(origin + "/api/download")) return;
+            download = urlvalue;
+            Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("application/octet-stream");
+            intent.putExtra(Intent.EXTRA_TITLE, "workspace.handoff");
+            startActivityForResult(intent, 13);
+        });
+        showview(browser);
+        browser.loadUrl(Uri.parse(value).buildUpon().appendQueryParameter("editor", "1").build().toString());
     }
 
     /*//////////////////////////////////////////////////////////////////////*/
@@ -199,6 +334,30 @@ public class mainactivity extends Activity {
             picker.onReceiveValue(result == RESULT_OK && data != null ? new Uri[]{data.getData()} : null);
             picker = null;
         }
+        if (request == 13 && result == RESULT_OK && data != null && download != null) {
+            Uri destination = data.getData();
+            String source = download;
+            String cookies = CookieManager.getInstance().getCookie(source);
+            new Thread(() -> {
+                HttpURLConnection connection = null;
+                try {
+                    connection = (HttpURLConnection)new URL(source).openConnection();
+                    connection.setConnectTimeout(10000);
+                    connection.setReadTimeout(30000);
+                    connection.setInstanceFollowRedirects(false);
+                    if (cookies != null) connection.setRequestProperty("Cookie", cookies);
+                    if (connection.getResponseCode() != 200) throw new Exception("Download failed");
+                    try (java.io.InputStream input = connection.getInputStream(); java.io.OutputStream output = getContentResolver().openOutputStream(destination)) {
+                        byte[] buffer = new byte[32768];
+                        int count;
+                        while ((count = input.read(buffer)) >= 0) output.write(buffer, 0, count);
+                    }
+                    runOnUiThread(() -> android.widget.Toast.makeText(this, "Handoff saved", android.widget.Toast.LENGTH_SHORT).show());
+                } catch (Exception error) {
+                    runOnUiThread(() -> android.widget.Toast.makeText(this, "Could not save handoff", android.widget.Toast.LENGTH_LONG).show());
+                } finally {if (connection != null) connection.disconnect();}
+            }, "workspacedownload").start();
+        }
     }
 
     @Override
@@ -210,6 +369,7 @@ public class mainactivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        attempt++;
         if (picker != null) picker.onReceiveValue(null);
         if (browser != null) browser.destroy();
         super.onDestroy();

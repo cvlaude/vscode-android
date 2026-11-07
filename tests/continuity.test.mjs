@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import {DatabaseSync as databasesync} from "node:sqlite";
 import {fileURLToPath as fileurl} from "node:url";
 import {createRequire as createrequire} from "node:module";
-import {atomic, contained, digest, getchunk, encrypt, decrypt} from "../companion/storage.mjs";
+import {atomic, contained, digest, getchunk, putchunk, encrypt, decrypt} from "../companion/storage.mjs";
 import {capture, restore, merge, git, validate} from "../companion/snapshot.mjs";
 import {exporthandoff, importhandoff, exportauth, importauth, pull, proof} from "../companion/transfer.mjs";
 import {configuration} from "../companion/config.mjs";
@@ -157,6 +158,13 @@ test("authenticated LAN pull deduplicates chunks and rejects wrong secrets and r
     const folder = new URL(workbench.url, peer).searchParams.get("folder");
     assert.equal(folder, process.platform === "win32" ? `/${source.repo.replaceAll("\\", "/")}` : source.repo);
   } finally {instance.server.closeAllConnections(); await new Promise(resolve => instance.server.close(resolve))}
+  const restarted = createserver(context, {port: 0});
+  await restarted.listen();
+  try {
+    assert.equal(restarted.localkey, instance.localkey);
+    const address = `http://127.0.0.1:${restarted.server.address().port}`;
+    assert.equal((await fetch(`${address}/api/status`, {headers: {authorization: `Bearer ${instance.localkey}`}})).status, 200);
+  } finally {restarted.server.closeAllConnections(); await new Promise(resolve => restarted.server.close(resolve))}
 });
 
 test("truncated handoff never becomes latest and damaged chunks are detected", async () => {
@@ -173,6 +181,25 @@ test("truncated handoff never becomes latest and damaged chunks are detected", a
   const hash = Object.values(manifest.files)[0].chunks[0];
   atomic(path.join(source.store, "chunks", hash), "damaged");
   assert.throws(() => getchunk(source.store, hash));
+});
+
+test("verified replacement repairs damaged database and legacy chunks without losing evidence", () => {
+  const source = fixture("repair");
+  const value = Buffer.from("recovered bytes");
+  const hash = putchunk(source.store, value);
+  const connection = new databasesync(path.join(source.store, "chunks.sqlite"));
+  try {connection.prepare("UPDATE chunks SET data = ? WHERE hash = ?").run(Buffer.from("damaged database"), hash)}
+  finally {connection.close()}
+  assert.throws(() => getchunk(source.store, hash));
+  assert.equal(putchunk(source.store, value), hash);
+  assert.deepEqual(getchunk(source.store, hash), value);
+  atomic(path.join(source.store, "chunks", hash), "damaged legacy");
+  assert.throws(() => getchunk(source.store, hash));
+  putchunk(source.store, value);
+  assert.deepEqual(getchunk(source.store, hash), value);
+  const retained = fs.readdirSync(path.join(source.store, "recovery")).map(name => fs.readFileSync(path.join(source.store, "recovery", name)).toString());
+  assert.ok(retained.includes("damaged database"));
+  assert.ok(retained.includes("damaged legacy"));
 });
 
 test("credential envelope is separate, encrypted, and preserves an existing login", () => {

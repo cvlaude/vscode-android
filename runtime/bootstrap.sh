@@ -25,4 +25,5 @@ set -eu
 exec proot-distro login debian --isolated -- /bin/bash /opt/workspace-install/runtime/start.sh
 LAUNCHER
 chmod 700 "$HOME/.local/bin/workspace"
+python "$project/runtime/commands.py"
 printf '\nStart the workspace with: ~/.local/bin/workspace\n'

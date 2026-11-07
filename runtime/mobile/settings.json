@@ -1,7 +1,14 @@
 {
   "workbench.colorTheme": "Dark Modern",
+  "workbench.experimental.modernUI": false,
+  "workbench.colorCustomizations": {
+    "statusBar.background": "#0078d4",
+    "statusBar.foreground": "#ffffff",
+    "statusBar.noFolderBackground": "#0078d4"
+  },
   "workbench.activityBar.location": "top",
   "workbench.sideBar.location": "left",
+  "workbench.secondarySideBar.defaultVisibility": "hidden",
   "workbench.startupEditor": "none",
   "workbench.editor.animations": false,
   "workbench.editor.tabSizing": "shrink",

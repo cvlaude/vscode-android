@@ -1,9 +1,11 @@
+const automatic = new URL(location.href).searchParams.get("editor") === "1";
 let access = location.hash.slice(1) || sessionStorage.getItem("access") || "";
 if (access) sessionStorage.setItem("access", access);
 history.replaceState(null, "", location.pathname);
 let snapshot;
 let current;
 let polling = false;
+let importkind = "import";
 
 /*//////////////////////////////////////////////////////////////////////*/
 
@@ -46,6 +48,7 @@ async function refresh() {
     text(".operationmessage", current.operation.message);
     text(".statusmessage", current.operation.error || current.operation.message);
     text(".errormessage", current.operation.error);
+    document.querySelector(".downloadlink").classList.toggle("hidden", current.operation.message !== "Export ready");
     text(".connectionlabel", current.peer ? "Paired" : "Local");
     const progress = current.operation.progress;
     const completed = progress ? progress.received + progress.reused : 0;
@@ -75,9 +78,14 @@ document.querySelectorAll("[data-action]").forEach(button => {
     try {
       if (action === "settings" || action === "menu") return page(true);
       if (action === "home") {page(false); await refresh(); return}
+      if (action === "import" || action === "authimport") {
+        importkind = action;
+        document.querySelector(".fileinput").click();
+        return;
+      }
       if (action === "open") {
         await api("connect", {});
-        const result = await api("workbench", {});
+        const result = await api("workbench", {view: button.dataset.view || "editor"});
         location.assign(result.url);
         return;
       }
@@ -97,5 +105,35 @@ document.querySelector(".settingspage").addEventListener("submit", async event =
   } catch (error) {text(".errormessage", error.message)}
 });
 
-refresh();
+document.querySelector(".fileinput").addEventListener("change", async event => {
+  const file = event.target.files[0];
+  if (!file) return;
+  try {
+    await api("connect", {});
+    const response = await fetch(`/api/${importkind}`, {method: "POST", headers: {authorization: `Bearer ${access}`, "content-type": "application/octet-stream"}, body: file});
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error);
+    page(false);
+    await refresh();
+  } catch (error) {text(".errormessage", error.message)}
+  event.target.value = "";
+});
+
+async function start() {
+  await refresh();
+  if (!automatic || !current?.repo) return;
+  for (let retry = 0; retry < 30; retry += 1) {
+    try {
+      await api("connect", {});
+      const result = await api("workbench", {view: "editor"});
+      location.assign(result.url);
+      return;
+    } catch (error) {
+      if (retry === 29) {text(".errormessage", error.message); return}
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+  }
+}
+
+start();
 setInterval(refresh, 2500);
