@@ -66,6 +66,58 @@ export function chunkfile(store, value) {
   return {size: value.length, hash: digest(value), chunks};
 }
 
+export function hashpath(filename) {
+  const descriptor = fs.openSync(filename, "r");
+  const hash = crypto.createHash("sha256");
+  const buffer = Buffer.alloc(1024 * 1024);
+  try {
+    let count;
+    while ((count = fs.readSync(descriptor, buffer, 0, buffer.length, null))) hash.update(buffer.subarray(0, count));
+  } finally {fs.closeSync(descriptor)}
+  return hash.digest("hex");
+}
+
+export function chunkpath(store, filename) {
+  const descriptor = fs.openSync(filename, "r");
+  const hash = crypto.createHash("sha256");
+  const chunks = [];
+  const buffer = Buffer.alloc(16384);
+  let size = 0;
+  try {
+    let count;
+    while ((count = fs.readSync(descriptor, buffer, 0, buffer.length, null))) {
+      const value = buffer.subarray(0, count);
+      hash.update(value);
+      chunks.push(putchunk(store, value));
+      size += count;
+    }
+  } finally {fs.closeSync(descriptor)}
+  return {hash: hash.digest("hex"), size, chunks};
+}
+
+export function writeentry(store, entry, target) {
+  fs.mkdirSync(path.dirname(target), {recursive: true, mode: 0o700});
+  const temporary = `${target}.${crypto.randomBytes(6).toString("hex")}.pending`;
+  const descriptor = fs.openSync(temporary, "wx", 0o600);
+  const hash = crypto.createHash("sha256");
+  let size = 0;
+  try {
+    for (const identity of entry.chunks) {
+      const value = getchunk(store, identity);
+      hash.update(value);
+      fs.writeFileSync(descriptor, value);
+      size += value.length;
+    }
+    if (size !== entry.size || hash.digest("hex") !== entry.hash) throw new Error("File checksum mismatch");
+    fs.fsyncSync(descriptor);
+  } finally {fs.closeSync(descriptor)}
+  fs.renameSync(temporary, target);
+  try {
+    const directory = fs.openSync(path.dirname(target), "r");
+    try {fs.fsyncSync(directory)} finally {fs.closeSync(directory)}
+  } catch (error) {if (process.platform !== "win32") throw error}
+}
+
 export function readentry(store, entry) {
   if (!entry || !Array.isArray(entry.chunks) || !Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > 512 * 1024 * 1024) throw new Error("Invalid file entry");
   if (entry.chunks.length !== Math.ceil(entry.size / 16384)) throw new Error("Invalid chunk count");

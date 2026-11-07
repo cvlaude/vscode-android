@@ -2,13 +2,13 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import {spawnSync as spawn} from "node:child_process";
-import {atomic, contained, chunkfile, readentry, digest} from "./storage.mjs";
+import {atomic, contained, chunkfile, chunkpath, hashpath, writeentry, readentry, digest} from "./storage.mjs";
 
 /*//////////////////////////////////////////////////////////////////////*/
 
 export function git(repo, args, input, optional = false) {
   const result = spawn("git", ["-c", "core.hooksPath=", ...args], {
-    cwd: repo, input, windowsHide: true, maxBuffer: 512 * 1024 * 1024,
+    cwd: repo, ...(typeof input === "number" ? {stdio: [input, "pipe", "pipe"]} : {input}), windowsHide: true, maxBuffer: 512 * 1024 * 1024,
     timeout: 180000, env: {...process.env, GIT_OPTIONAL_LOCKS: "0"}
   });
   if (result.error) throw result.error;
@@ -23,10 +23,38 @@ function excluded(relative) {
 function addfile(files, store, name, filename) {
   const before = fs.statSync(filename);
   if (before.size > 512 * 1024 * 1024) throw new Error(`File exceeds 512 MiB: ${name}`);
-  const value = fs.readFileSync(filename);
+  const value = chunkpath(store, filename);
   const after = fs.statSync(filename);
   if (before.size !== after.size || before.mtimeMs !== after.mtimeMs) throw new Error(`File changed during capture: ${name}`);
-  files[name] = {...chunkfile(store, value), executable: Boolean(before.mode & 0o111)};
+  files[name] = {...value, executable: Boolean(before.mode & 0o111)};
+}
+
+function packobjects(repo, store, objects, previous, files) {
+  let exclusions = [];
+  if (previous?.source === repo && Array.isArray(previous.objects)) {
+    const values = previous.objects;
+    const checked = values.length ? git(repo, ["cat-file", "--batch-check"], values.join("\n") + "\n").toString() : "";
+    if (!checked.includes(" missing")) {
+      exclusions = values.map(value => `^${value}`);
+      for (const [name, entry] of Object.entries(previous.files)) if (name === "git/objects.pack" || name.startsWith("git/packs/")) files[name] = entry;
+      if (previous.objectidentity === digest(objects.slice().sort().join("\n"))) return;
+    }
+  }
+  const spool = path.join(store, "capture.pack");
+  const descriptor = fs.openSync(spool, "w", 0o600);
+  try {
+    const result = spawn("git", ["-c", "core.hooksPath=", "pack-objects", "--stdout", "--revs"], {
+      cwd: repo, input: [...objects, ...exclusions].join("\n") + "\n", stdio: ["pipe", descriptor, "pipe"],
+      windowsHide: true, timeout: 300000, maxBuffer: 4 * 1024 * 1024, env: {...process.env, GIT_OPTIONAL_LOCKS: "0"}
+    });
+    if (result.error) throw result.error;
+    if (result.status !== 0) throw new Error(result.stderr.toString().trim() || "Git pack failed");
+    fs.fsyncSync(descriptor);
+  } finally {fs.closeSync(descriptor)}
+  if (fs.statSync(spool).size > 8 * 1024 * 1024 * 1024) throw new Error("Git pack exceeds 8 GiB");
+  const entry = chunkpath(store, spool);
+  if (entry.size > 32 || !Object.keys(files).some(name => name === "git/objects.pack" || name.startsWith("git/packs/"))) files[`git/packs/${entry.hash}.pack`] = entry;
+  fs.truncateSync(spool, 0);
 }
 
 export function capture(options) {
@@ -60,6 +88,8 @@ function capturefiles({repo, store, sessions = [], codexhome, profile, name: pro
   }
   const files = {};
   const head = fs.readFileSync(path.join(gitdir, "HEAD"), "utf8");
+  const indexpath = path.join(gitdir, "index");
+  const indexbytes = fs.existsSync(indexpath) ? fs.readFileSync(indexpath) : null;
   const refs = git(repo, ["for-each-ref", "--format=%(objectname) %(refname)"]).toString();
   const queuepath = path.join(gitdir, "ghdesktop", "queue.json");
   const queuebytes = fs.existsSync(queuepath) ? fs.readFileSync(queuepath) : Buffer.from('{"version":1,"drafts":[]}');
@@ -88,14 +118,11 @@ function capturefiles({repo, store, sessions = [], codexhome, profile, name: pro
   const objectidentity = digest([...objectids].sort().join("\n"));
   let previous;
   try {previous = JSON.parse(fs.readFileSync(path.join(store, "published.json")))} catch {}
-  if (objectids.size) {
-    files["git/objects.pack"] = previous?.objectidentity === objectidentity && previous.source === repo && previous.files["git/objects.pack"]
-      ? previous.files["git/objects.pack"] : chunkfile(store, git(repo, ["pack-objects", "--stdout", "--revs"], [...objectids].join("\n") + "\n"));
-  }
+  if (objectids.size) packobjects(repo, store, [...objectids], previous, files);
   files["git/HEAD"] = chunkfile(store, Buffer.from(head));
   files["git/refs"] = chunkfile(store, Buffer.from(refs));
   files["git/ghdesktop/queue.json"] = chunkfile(store, queuebytes);
-  if (fs.existsSync(path.join(gitdir, "index"))) addfile(files, store, "git/index", path.join(gitdir, "index"));
+  if (indexbytes) files["git/index"] = chunkfile(store, indexbytes);
   if (codexhome) {
     for (const relative of sessions) {
       if (!relative.startsWith("sessions/") || !relative.endsWith(".jsonl")) throw new Error("Select individual Codex session JSONL files");
@@ -108,8 +135,10 @@ function capturefiles({repo, store, sessions = [], codexhome, profile, name: pro
     }
   }
   if (refs !== git(repo, ["for-each-ref", "--format=%(objectname) %(refname)"]).toString() || head !== fs.readFileSync(path.join(gitdir, "HEAD"), "utf8") || (fs.existsSync(queuepath) && !queuebytes.equals(fs.readFileSync(queuepath)))) throw new Error("Repository changed during capture; retry");
+  const currentindex = fs.existsSync(indexpath) ? fs.readFileSync(indexpath) : null;
+  if (indexbytes ? !currentindex || !indexbytes.equals(currentindex) : currentindex) throw new Error("Git index changed during capture; retry");
   if (previous?.source === repo && JSON.stringify(previous.files) === JSON.stringify(files) && JSON.stringify(previous.omitted) === JSON.stringify(omitted)) return previous;
-  const manifest = {version: 1, id: crypto.randomUUID(), created: new Date().toISOString(), name: projectname || path.basename(repo), source: repo, objectidentity, files, omitted};
+  const manifest = {version: 1, id: crypto.randomUUID(), created: new Date().toISOString(), name: projectname || path.basename(repo), source: repo, objectidentity, objects: [...objectids], files, omitted};
   validate(manifest);
   atomic(path.join(store, "snapshots", `${manifest.id}.json`), JSON.stringify(manifest));
   atomic(path.join(store, "latest.json"), JSON.stringify(manifest));
@@ -122,17 +151,19 @@ export function validate(manifest) {
   const unique = new Set();
   for (const name of Object.keys(manifest.files)) {
     const entry = manifest.files[name];
-    if (!entry || !/^[a-f0-9]{64}$/.test(entry.hash) || !Array.isArray(entry.chunks) || !entry.chunks.every(hash => /^[a-f0-9]{64}$/.test(hash)) || !Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > 512 * 1024 * 1024 || entry.chunks.length !== Math.ceil(entry.size / 16384)) throw new Error("Invalid file entry");
+    const pack = /^git\/packs\/[a-f0-9]{64}\.pack$/.test(name);
+    if (!entry || !/^[a-f0-9]{64}$/.test(entry.hash) || !Array.isArray(entry.chunks) || !entry.chunks.every(hash => /^[a-f0-9]{64}$/.test(hash)) || !Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > (pack ? 8 * 1024 * 1024 * 1024 : 512 * 1024 * 1024) || entry.chunks.length !== Math.ceil(entry.size / 16384)) throw new Error("Invalid file entry");
     if (!/^(repo|git|codex|profile)\//.test(name)) throw new Error("Invalid snapshot namespace");
     contained(path.resolve("validation"), name);
     const portable = name.toLowerCase();
     if (unique.has(portable)) throw new Error("Case-colliding paths cannot be mirrored");
     unique.add(portable);
     if (name.startsWith("repo/.git/") || name === "repo/.git") throw new Error("Git metadata must use its own namespace");
-    if (name.startsWith("git/") && !["git/objects.pack", "git/HEAD", "git/refs", "git/index", "git/ghdesktop/queue.json"].includes(name)) throw new Error("Unapproved Git metadata");
+    if (name.startsWith("git/") && !pack && !["git/objects.pack", "git/HEAD", "git/refs", "git/index", "git/ghdesktop/queue.json"].includes(name)) throw new Error("Unapproved Git metadata");
     if (name.startsWith("codex/") && !/^codex\/sessions\/.*\.jsonl$/.test(name)) throw new Error("Unapproved Codex state");
     if (name.startsWith("profile/") && !["profile/settings.json", "profile/keybindings.json", "profile/extensions.json"].includes(name)) throw new Error("Unapproved profile data");
   }
+  if (manifest.objects && (!Array.isArray(manifest.objects) || !manifest.objects.every(value => /^[a-f0-9]{40,64}$/.test(value)))) throw new Error("Invalid Git object identities");
   return manifest;
 }
 
@@ -149,18 +180,22 @@ export function restore({manifest, store, destination}) {
   for (const [name, entry] of Object.entries(manifest.files)) {
     const target = contained(destination, name);
     if (fs.existsSync(target)) {
-      const previous = fs.readFileSync(target);
-      if (digest(previous) === entry.hash) continue;
-      atomic(contained(destination, `recovery/${Date.now()}/${name}`), previous);
+      if (hashpath(target) === entry.hash) continue;
+      const retained = contained(destination, `recovery/${Date.now()}/${name}`);
+      fs.mkdirSync(path.dirname(retained), {recursive: true});
+      fs.renameSync(target, retained);
     }
-    atomic(target, readentry(store, entry));
+    writeentry(store, entry, target);
     if (entry.executable && process.platform !== "win32") fs.chmodSync(target, 0o700);
   }
   const repo = path.join(destination, "repo");
   fs.mkdirSync(repo, {recursive: true});
   git(repo, ["init", "-b", "main"]);
   const metadata = path.join(destination, "git");
-  if (manifest.files["git/objects.pack"]) git(repo, ["index-pack", "--stdin", "--strict"], fs.readFileSync(path.join(metadata, "objects.pack")));
+  for (const name of Object.keys(manifest.files).filter(name => name === "git/objects.pack" || name.startsWith("git/packs/"))) {
+    const descriptor = fs.openSync(contained(destination, name), "r");
+    try {git(repo, ["index-pack", "--stdin", "--strict"], descriptor)} finally {fs.closeSync(descriptor)}
+  }
   const refs = fs.readFileSync(path.join(metadata, "refs"), "utf8").trim().split("\n").filter(Boolean);
   for (const line of refs) {
     const [hash, ref] = line.split(" ");
